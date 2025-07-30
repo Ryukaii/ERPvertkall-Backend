@@ -9,8 +9,12 @@ async function bootstrap() {
   const configService = app.get(ConfigService);
 
   // Habilitar CORS para comunicação com frontend
+  const allowedOrigins = process.env.NODE_ENV === 'production' 
+    ? [process.env.FRONTEND_URL || 'https://your-frontend-domain.com'] // Configure FRONTEND_URL in production
+    : ['http://localhost:5173', 'http://localhost:3000']; // Development origins
+  
   app.enableCors({
-    origin: ['http://localhost:5173', 'http://localhost:3000'], // Vite e React dev servers
+    origin: allowedOrigins,
     credentials: true,
   });
 
