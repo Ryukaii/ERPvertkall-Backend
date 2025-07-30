@@ -3,6 +3,7 @@ import {
   Get, 
   Post, 
   Put, 
+  Patch,
   Param, 
   Body, 
   UseGuards,
@@ -12,6 +13,8 @@ import { OfxPendingTransactionService } from './ofx-pending-transaction.service'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '@prisma/client';
+import { UpdateOfxPendingTagsDto } from './dto/update-ofx-pending-tags.dto';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 
 interface UpdatePendingCategoryDto {
   categoryId: string;
@@ -24,6 +27,8 @@ interface BatchUpdateCategoriesDto {
   }>;
 }
 
+@ApiTags('OFX Pending Transactions')
+@ApiBearerAuth()
 @Controller('ofx-pending-transactions')
 @UseGuards(JwtAuthGuard)
 export class OfxPendingTransactionController {
@@ -78,5 +83,17 @@ export class OfxPendingTransactionController {
   @Get('import/:importId/summary')
   async getImportSummary(@Param('importId') importId: string) {
     return this.ofxPendingTransactionService.getImportSummary(importId);
+  }
+
+  @Patch(':id/tags')
+  @ApiOperation({ summary: 'Atualizar tags de uma transação pendente OFX' })
+  @ApiResponse({ status: 200, description: 'Tags atualizadas com sucesso.' })
+  @ApiResponse({ status: 404, description: 'Transação não encontrada.' })
+  @ApiResponse({ status: 400, description: 'Tags inválidas.' })
+  async updateTags(
+    @Param('id') id: string,
+    @Body() updateTagsDto: UpdateOfxPendingTagsDto,
+  ) {
+    return this.ofxPendingTransactionService.updateTags(id, updateTagsDto.tagIds || []);
   }
 } 

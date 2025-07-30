@@ -3,7 +3,7 @@
 ## Autenticação
 
 ### POST /auth/register
-Registra um novo usuário
+Registra um novo usuário (requer aprovação de administrador)
 ```json
 {
   "email": "user@example.com",
@@ -12,8 +12,21 @@ Registra um novo usuário
 }
 ```
 
+**Resposta:**
+```json
+{
+  "id": "user-id",
+  "email": "user@example.com",
+  "name": "Nome do Usuário",
+  "isAdmin": false,
+  "isApproved": false,
+  "createdAt": "2025-07-30T20:26:37.000Z",
+  "message": "Cadastro realizado com sucesso! Aguarde a aprovação de um administrador para acessar o sistema."
+}
+```
+
 ### POST /auth/login
-Faz login do usuário
+Faz login do usuário (apenas usuários aprovados)
 ```json
 {
   "email": "user@example.com",
@@ -21,16 +34,53 @@ Faz login do usuário
 }
 ```
 
+**Resposta:**
+```json
+{
+  "access_token": "jwt-token",
+  "user": {
+    "id": "user-id",
+    "email": "user@example.com",
+    "name": "Nome do Usuário",
+    "isAdmin": false,
+    "isApproved": true
+  }
+}
+```
+
+**Erro se usuário não aprovado:**
+```json
+{
+  "statusCode": 401,
+  "message": "Conta ainda não foi aprovada. Entre em contato com o administrador.",
+  "error": "Unauthorized"
+}
+```
+
 ## Usuários (Apenas Administradores)
 
 ### GET /users
 Lista todos os usuários (apenas admin)
+**Query Parameters:**
+- `isApproved` (boolean, opcional): Filtrar por status de aprovação
+- `isAdmin` (boolean, opcional): Filtrar por status de admin
+
+### GET /users/pending-approvals
+Lista usuários pendentes de aprovação (apenas admin ou usuários com permissão de aprovação)
 
 ### GET /users/:id
 Busca usuário específico (apenas admin)
 
 ### POST /users/:id/toggle-admin
 Altera status de admin de um usuário (apenas admin)
+
+### PUT /users/:id/approve
+Aprova ou rejeita um usuário (apenas admin ou usuários com permissão de aprovação)
+```json
+{
+  "isApproved": true
+}
+```
 
 ### PUT /users/:id/permissions
 Atualiza permissões de um usuário (apenas admin)
@@ -55,8 +105,53 @@ Atualiza permissões de um usuário (apenas admin)
 ### GET /users/:id/permissions
 Busca permissões de um usuário (apenas admin)
 
+### DELETE /users/:id/permissions/:moduleId/:resource/:action
+Remove uma permissão específica de um usuário (apenas admin)
+
 ### GET /users/me/permissions
 Busca minhas permissões (qualquer usuário autenticado)
+
+## Módulos e Permissões (Apenas Administradores)
+
+### GET /users/modules
+Lista todos os módulos disponíveis no sistema (apenas admin)
+```json
+[
+  {
+    "id": "module-id",
+    "name": "financeiro",
+    "displayName": "Módulo Financeiro",
+    "description": "Gestão de contas a pagar e receber",
+    "isActive": true,
+    "_count": {
+      "userPermissions": 45
+    }
+  }
+]
+```
+
+### GET /users/modules/:moduleId/resources
+Lista recursos e ações disponíveis em um módulo (apenas admin)
+```json
+{
+  "module": {
+    "id": "module-id",
+    "name": "financeiro",
+    "displayName": "Módulo Financeiro",
+    "description": "Gestão de contas a pagar e receber"
+  },
+  "resources": [
+    {
+      "resource": "categories",
+      "actions": ["read", "write"]
+    },
+    {
+      "resource": "transactions",
+      "actions": ["read", "write"]
+    }
+  ]
+}
+```
 
 ## Módulo Financeiro
 

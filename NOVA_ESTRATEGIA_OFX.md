@@ -5,7 +5,7 @@
 Implementei a nova estratégia para importação de OFX com aprovação de categorizações:
 
 1. **OFX é importado** → começa análise
-2. **Envia dados para ChatGPT** → analizar (resposta com confiança e categoria)
+2. **Aplica regras regex** → analisar (resposta com confiança e categoria)
 3. **Guarda confiança e categoria** → junto do schema da transação na tabela `ofx_pending_transactions`
 4. **Revisar categorias sugeridas** → através de novas rotas REST
 5. **Autorizar e criar transações** → quando satisfeito com as alterações
@@ -21,9 +21,9 @@ Implementei a nova estratégia para importação de OFX com aprovação de categ
 - Cria registros em `OfxPendingTransaction` com sugestões de categoria
 - Status do import fica `PENDING_REVIEW` até aprovação
 
-### 3. ChatGPT Simplificado
-- Removida a "Explicação" do prompt de resposta
-- Resposta mais concisa com apenas categoria e confiança
+### 3. Categorização por Regex
+- Aplicação de regras regex predefinidas
+- Resposta rápida com categoria e confiança de 100%
 
 ## Rotas Disponíveis
 
@@ -90,7 +90,7 @@ Content-Type: application/json
 }
 ```
 
-#### 4. Sugerir Nova Categoria (Re-analisar com ChatGPT)
+#### 4. Sugerir Nova Categoria (Re-analisar com regex)
 ```http
 POST /ofx-pending-transactions/{transactionId}/suggest-category
 ```
@@ -121,7 +121,7 @@ POST /ofx-pending-transactions/import/{importId}/approve
 ## Critérios de Categorização Automática
 
 ### Durante Import:
-- ChatGPT analisa cada transação
+- Regex analisa cada transação
 - Salva sugestão e confiança na tabela pendente
 - **Não aplica automaticamente** (diferente do comportamento anterior)
 
@@ -163,7 +163,7 @@ curl -X POST /ofx-pending-transactions/import/{importId}/approve
 - Modificação do fluxo de import
 - Controller e service para gerenciamento pendente
 - Rota de aprovação
-- ChatGPT sem "Explicação"
+- Regex sem "Explicação"
 - Compilação sem erros
 
 🎯 **Pronto para Teste:**

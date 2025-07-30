@@ -14,16 +14,22 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { OfxImportService } from './ofx-import.service';
 import { ImportOfxDto } from './dto/import-ofx.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { ModuleAccessGuard } from '../../common/guards/module-access.guard';
+import { PermissionGuard } from '../../common/guards/permission.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { RequireModule } from '../../common/decorators/module.decorator';
+import { Permission } from '../../common/decorators/permission.decorator';
 import { User } from '@prisma/client';
 
 @Controller('ofx-import')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, ModuleAccessGuard, PermissionGuard)
+@RequireModule('bancos')
 export class OfxImportController {
   constructor(private readonly ofxImportService: OfxImportService) {}
 
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
+  @Permission('bancos', 'ofx_imports', 'write')
   async uploadOfxFile(
     @UploadedFile() file: Express.Multer.File,
     @Body() importOfxDto: ImportOfxDto,

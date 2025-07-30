@@ -17,8 +17,4 @@ export class ConfigService {
   get port(): number {
     return parseInt(process.env.PORT ?? '3000');
   }
-
-  get openaiApiKey(): string {
-    return process.env.OPENAI_API_KEY || '';
-  }
 } 

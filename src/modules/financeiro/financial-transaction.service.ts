@@ -5,10 +5,14 @@ import { UpdateFinancialTransactionDto } from './dto/update-financial-transactio
 import { FilterFinancialTransactionDto } from './dto/filter-financial-transaction.dto';
 import { MakeRecurringDto } from './dto/make-recurring.dto';
 import { FinancialTransactionStatus, Prisma, RecurrenceFrequency } from '@prisma/client';
+import { TagsService } from '../tags/tags.service';
 
 @Injectable()
 export class FinancialTransactionService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private tagsService: TagsService,
+  ) {}
 
   async create(createFinancialTransactionDto: CreateFinancialTransactionDto, userId: string) {
     const { 
@@ -20,7 +24,8 @@ export class FinancialTransactionService {
       type, 
       status, 
       categoryId, 
-      paymentMethodId 
+      paymentMethodId,
+      tagIds
     } = createFinancialTransactionDto;
 
     // Verificar se a categoria existe
@@ -35,6 +40,14 @@ export class FinancialTransactionService {
       });
     }
 
+    // Validar tags se fornecidas
+    if (tagIds && tagIds.length > 0) {
+      const validTags = await this.tagsService.findByIds(tagIds);
+      if (validTags.length !== tagIds.length) {
+        throw new BadRequestException('Uma ou mais tags são inválidas ou estão inativas');
+      }
+    }
+
     // Validar datas
     const dueDateObj = new Date(dueDate);
     const paidDateObj = paidDate ? new Date(paidDate) : null;
@@ -43,7 +56,8 @@ export class FinancialTransactionService {
       // Permitir pagamento antecipado
     }
 
-    return this.prisma.financialTransaction.create({
+    // Criar transação
+    const transaction = await this.prisma.financialTransaction.create({
       data: {
         title,
         description,
@@ -56,11 +70,31 @@ export class FinancialTransactionService {
         paymentMethodId,
         userId,
       },
+    });
+
+    // Adicionar tags se fornecidas
+    if (tagIds && tagIds.length > 0) {
+      await this.prisma.financialTransactionTag.createMany({
+        data: tagIds.map(tagId => ({
+          financialTransactionId: transaction.id,
+          tagId,
+        })),
+      });
+    }
+
+    // Retornar transação com todos os relacionamentos
+    return this.prisma.financialTransaction.findUnique({
+      where: { id: transaction.id },
       include: {
         category: true,
         paymentMethod: true,
         user: {
           select: { id: true, name: true, email: true },
+        },
+        tags: {
+          include: {
+            tag: true,
+          },
         },
       },
     });

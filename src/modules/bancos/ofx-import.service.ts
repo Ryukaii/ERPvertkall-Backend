@@ -4,12 +4,14 @@ import { ImportOfxDto } from './dto/import-ofx.dto';
 import { OfxImport, OfxImportStatus, FinancialTransactionType, FinancialTransactionStatus } from '@prisma/client';
 import * as ofx from 'ofx';
 import { AiCategorizationService } from './ai-categorization.service';
+import { PaymentMethodSuggestionService } from './payment-method-suggestion.service';
 
 @Injectable()
 export class OfxImportService {
   constructor(
     private prisma: PrismaService,
     private aiCategorizationService: AiCategorizationService,
+    private paymentMethodSuggestionService: PaymentMethodSuggestionService,
   ) {}
 
   async createImport(importOfxDto: ImportOfxDto): Promise<OfxImport> {
@@ -198,196 +200,358 @@ export class OfxImportService {
     importId: string, 
     userId: string
   ): Promise<void> {
-    const {
-      TRNTYPE,
-      DTPOSTED,
-      TRNAMT,
-      FITID,
-      MEMO,
-      NAME,
-      CHECKNUM,
-    } = ofxTransaction;
-
-    // Log para debug - mostrar dados originais recebidos
-    console.log('Processando transação OFX:', {
-      TRNTYPE,
-      MEMO: MEMO ? `"${MEMO}"` : 'undefined',
-      NAME: NAME ? `"${NAME}"` : 'undefined',
-      TRNAMT,
-    });
-
-    // Função para corrigir problemas de encoding de forma mais simples e eficaz
-    const fixEncoding = (text: string): string => {
-      if (!text) return text;
-      
-      // Primeiro, tentar correções básicas de caracteres corrompidos comuns
-      let fixedText = text
-        // Correções específicas para caracteres corrompidos mais comuns
-        .replace(/Ã¡/g, 'á')
-        .replace(/Ã©/g, 'é')
-        .replace(/Ã­/g, 'í')
-        .replace(/Ã³/g, 'ó')
-        .replace(/Ãº/g, 'ú')
-        .replace(/Ã£/g, 'ã')
-        .replace(/Ãµ/g, 'õ')
-        .replace(/Ã§/g, 'ç')
-        .replace(/Ã/g, 'Á')
-        .replace(/Ã‰/g, 'É')
-        .replace(/Ã/g, 'Í')
-        .replace(/Ã"/g, 'Ó')
-        .replace(/Ãš/g, 'Ú')
-        .replace(/Ã‡/g, 'Ç')
-        .replace(/Ã‚/g, 'Â')
-        .replace(/Ãª/g, 'ê')
-        .replace(/Ã´/g, 'ô')
-        .replace(/Ã /g, 'à')
-        // Correções para padrões específicos de bancos
-        .replace(/DÃ‰B/g, 'DÉB')
-        .replace(/CRÃ‰D/g, 'CRÉD')
-        .replace(/TRANSFERÃŠNCIA/g, 'TRANSFERÊNCIA')
-        .replace(/DEPÃ"SITO/g, 'DEPÓSITO')
-        .replace(/SÃƑQUE/g, 'SAQUE')
-        .replace(/Ã"RGÃOS/g, 'ÓRGÃOS')
-        .replace(/PREVIDÃŠNCIA/g, 'PREVIDÊNCIA')
-        .replace(/CONVÃŠNIO/g, 'CONVÊNIO')
-        .replace(/EMPRÃ‰STIMO/g, 'EMPRÉSTIMO')
-        .replace(/APLICAÃ‡ÃƒO/g, 'APLICAÇÃO')
-        .replace(/RESGATEAPLICAÃ‡ÃƒO/g, 'RESGATE APLICAÇÃO');
-
-      // Log para debug quando houver correções
-      if (fixedText !== text) {
-        console.log(`Encoding corrigido: "${text}" -> "${fixedText}"`);
-      }
-      
-      return fixedText;
-    };
-
-    // Determinar tipo da transação baseado no TRNTYPE e valor
-    const amount = parseFloat(TRNAMT);
-    const amountInCents = Math.round(Math.abs(amount) * 100);
-    
-    // Mapear TRNTYPE do OFX para os tipos do sistema
-    let type: FinancialTransactionType;
-    
-    // Primeiro, verificar se é crédito ou débito baseado no TRNTYPE
-    const creditTypes = ['CREDIT', 'DEP', 'DIRECTDEP', 'INT', 'DIV'];
-    const debitTypes = ['DEBIT', 'ATM', 'POS', 'FEE', 'SRVCHG', 'CHECK', 'PAYMENT', 'DIRECTDEBIT', 'REPEATPMT'];
-    
-    if (creditTypes.includes(TRNTYPE)) {
-      type = FinancialTransactionType.CREDIT;
-    } else if (debitTypes.includes(TRNTYPE)) {
-      type = FinancialTransactionType.DEBIT;
-    } else {
-      // Fallback: usar valor para determinar tipo (lógica anterior)
-      type = amount > 0 ? FinancialTransactionType.CREDIT : FinancialTransactionType.DEBIT;
-    }
-    
-    console.log(`Tipo determinado: TRNTYPE="${TRNTYPE}", Valor=${amount}, Tipo final="${type}"`);
-
-    // Converter data do OFX
-    const transactionDate = this.parseOfxDate(DTPOSTED);
-
-    // Corrigir encoding dos campos de texto
-    const fixedMemo = fixEncoding(MEMO || '');
-    const fixedName = fixEncoding(NAME || '');
-    
-    // Criar título baseado no tipo de transação
-    const title = this.generateTransactionTitle(TRNTYPE, fixedMemo, CHECKNUM);
-
-    // Verificar se a transação já existe (evitar duplicatas)
-    const existingTransaction = await this.prisma.ofxPendingTransaction.findFirst({
-      where: {
-        ofxImportId: importId,
-        title,
-        amount: amountInCents,
-        transactionDate,
-      },
-    });
-
-    if (existingTransaction) {
-      return; // Transação já existe, pular
-    }
-
-    // Criar nova transação pendente
-    const pendingTransaction = await this.prisma.ofxPendingTransaction.create({
-      data: {
-        ofxImportId: importId,
-        title,
-        description: fixedName || fixedMemo || `Transação OFX - ${TRNTYPE}`,
-        amount: amountInCents,
-        type,
-        transactionDate,
-        fitid: FITID,
-        trntype: TRNTYPE,
-        checknum: CHECKNUM,
-        memo: fixedMemo,
-        name: fixedName,
-      },
-    });
-
-    // Tentar categorização automática com ChatGPT
-    console.log('\n🤖 === DEBUG OFX - INICIANDO CATEGORIZAÇÃO ===');
-    console.log(`📊 Transação pendente criada: ${pendingTransaction.id}`);
-    console.log(`📝 Dados para categorização:`);
-    console.log(`   Título: "${title}"`);
-    console.log(`   Descrição: "${fixedName || fixedMemo || ''}"`);
-    console.log(`   Valor: ${amountInCents} centavos`);
-    console.log(`   Tipo: ${type}`);
-    
     try {
-      const categorySuggestion = await this.aiCategorizationService.suggestCategoryForTransaction(
-        title,
-        fixedName || fixedMemo || '',
-        amountInCents,
-        type,
-      );
+      // Extrair campos com valores padrão para campos faltantes
+      const {
+        TRNTYPE = 'OTHER',
+        DTPOSTED,
+        TRNAMT = '0',
+        FITID = null,
+        MEMO = '',
+        NAME = '',
+        CHECKNUM = null,
+      } = ofxTransaction;
 
-      console.log('\n📋 Resultado da categorização:');
-      if (categorySuggestion) {
-        console.log(`   ✅ Sugestão recebida:`);
-        console.log(`      Categoria: ${categorySuggestion.categoryName}`);
-        console.log(`      Confiança: ${categorySuggestion.confidence}%`);
-        
-        // Atualizar a transação pendente com a sugestão
-        await this.aiCategorizationService.updateOfxPendingTransactionCategory(
-          pendingTransaction.id,
-          categorySuggestion.categoryId,
-          categorySuggestion.confidence,
-        );
-        
-        console.log(`   💾 Sugestão salva na transação pendente`);
-      } else {
-        console.log(`   ❌ Nenhuma sugestão recebida`);
+      // Log para debug - mostrar dados originais recebidos
+      console.log('Processando transação OFX:', {
+        TRNTYPE,
+        DTPOSTED,
+        TRNAMT,
+        MEMO: MEMO ? `"${MEMO}"` : 'undefined',
+        NAME: NAME ? `"${NAME}"` : 'undefined',
+        FITID,
+        CHECKNUM,
+      });
+
+      // Validar campos obrigatórios mínimos
+      if (!DTPOSTED) {
+        console.warn('⚠️ Transação pulada: DTPOSTED ausente');
+        return;
       }
+
+      if (!TRNAMT || TRNAMT === '0') {
+        console.warn('⚠️ Transação pulada: TRNAMT ausente ou zero');
+        return;
+      }
+
+      // Função para corrigir problemas de encoding de forma mais simples e eficaz
+      const fixEncoding = (text: string): string => {
+        if (!text) return text;
+        
+        // Primeiro, tentar correções básicas de caracteres corrompidos comuns
+        let fixedText = text
+          // Correções específicas para caracteres corrompidos mais comuns
+          .replace(/Ã¡/g, 'á')
+          .replace(/Ã©/g, 'é')
+          .replace(/Ã­/g, 'í')
+          .replace(/Ã³/g, 'ó')
+          .replace(/Ãº/g, 'ú')
+          .replace(/Ã£/g, 'ã')
+          .replace(/Ãµ/g, 'õ')
+          .replace(/Ã§/g, 'ç')
+          .replace(/Ã/g, 'Á')
+          .replace(/Ã‰/g, 'É')
+          .replace(/Ã/g, 'Í')
+          .replace(/Ã"/g, 'Ó')
+          .replace(/Ãš/g, 'Ú')
+          .replace(/Ã‡/g, 'Ç')
+          .replace(/Ã‚/g, 'Â')
+          .replace(/Ãª/g, 'ê')
+          .replace(/Ã´/g, 'ô')
+          .replace(/Ã /g, 'à')
+          // Correções para padrões específicos de bancos
+          .replace(/DÃ‰B/g, 'DÉB')
+          .replace(/CRÃ‰D/g, 'CRÉD')
+          .replace(/TRANSFERÃŠNCIA/g, 'TRANSFERÊNCIA')
+          .replace(/DEPÃ"SITO/g, 'DEPÓSITO')
+          .replace(/SÃƑQUE/g, 'SAQUE')
+          .replace(/Ã"RGÃOS/g, 'ÓRGÃOS')
+          .replace(/PREVIDÃŠNCIA/g, 'PREVIDÊNCIA')
+          .replace(/CONVÃŠNIO/g, 'CONVÊNIO')
+          .replace(/EMPRÃ‰STIMO/g, 'EMPRÉSTIMO')
+          .replace(/APLICAÃ‡ÃƒO/g, 'APLICAÇÃO')
+          .replace(/RESGATEAPLICAÃ‡ÃƒO/g, 'RESGATE APLICAÇÃO');
+
+        // Log para debug quando houver correções
+        if (fixedText !== text) {
+          console.log(`Encoding corrigido: "${text}" -> "${fixedText}"`);
+        }
+        
+        return fixedText;
+      };
+
+      // Determinar tipo da transação baseado no TRNTYPE e valor
+      const amount = parseFloat(TRNAMT);
+      
+      // Validar se o valor é um número válido
+      if (isNaN(amount)) {
+        console.warn(`⚠️ Transação pulada: TRNAMT inválido "${TRNAMT}"`);
+        return;
+      }
+
+      const amountInCents = Math.round(Math.abs(amount) * 100);
+      
+      // Mapear TRNTYPE do OFX para os tipos do sistema
+      let type: FinancialTransactionType;
+      
+      // Primeiro, verificar se é crédito ou débito baseado no TRNTYPE
+      const creditTypes = ['CREDIT', 'DEP', 'DIRECTDEP', 'INT', 'DIV'];
+      const debitTypes = ['DEBIT', 'ATM', 'POS', 'FEE', 'SRVCHG', 'CHECK', 'PAYMENT', 'DIRECTDEBIT', 'REPEATPMT'];
+      
+      if (creditTypes.includes(TRNTYPE)) {
+        type = FinancialTransactionType.CREDIT;
+      } else if (debitTypes.includes(TRNTYPE)) {
+        type = FinancialTransactionType.DEBIT;
+      } else {
+        // Fallback: usar valor para determinar tipo (lógica anterior)
+        type = amount > 0 ? FinancialTransactionType.CREDIT : FinancialTransactionType.DEBIT;
+      }
+      
+      console.log(`Tipo determinado: TRNTYPE="${TRNTYPE}", Valor=${amount}, Tipo final="${type}"`);
+
+      // Converter data do OFX com tratamento de erro
+      let transactionDate: Date;
+      try {
+        transactionDate = this.parseOfxDate(DTPOSTED);
+      } catch (error) {
+        console.warn(`⚠️ Transação pulada: DTPOSTED inválido "${DTPOSTED}"`);
+        return;
+      }
+
+      // Corrigir encoding dos campos de texto
+      const fixedMemo = fixEncoding(MEMO || '');
+      const fixedName = fixEncoding(NAME || '');
+      
+      // Criar título baseado no tipo de transação
+      const title = this.generateTransactionTitle(TRNTYPE, fixedMemo, CHECKNUM);
+
+      // Verificar se a transação já existe (evitar duplicatas) - lógica menos restritiva
+      const existingTransaction = await this.prisma.ofxPendingTransaction.findFirst({
+        where: {
+          ofxImportId: importId,
+          fitid: FITID, // Usar FITID como identificador único se disponível
+        },
+      });
+
+      if (existingTransaction && FITID) {
+        console.log(`🔄 Transação já existe (FITID: ${FITID}), pulando...`);
+        return;
+      }
+
+      // Se não tem FITID, verificar por outros critérios menos restritivos
+      if (!FITID) {
+        const existingByCriteria = await this.prisma.ofxPendingTransaction.findFirst({
+          where: {
+            ofxImportId: importId,
+            title,
+            amount: amountInCents,
+            transactionDate: {
+              gte: new Date(transactionDate.getTime() - 24 * 60 * 60 * 1000), // ±1 dia
+              lte: new Date(transactionDate.getTime() + 24 * 60 * 60 * 1000),
+            },
+          },
+        });
+
+        if (existingByCriteria) {
+          console.log(`🔄 Transação similar já existe, pulando...`);
+          return;
+        }
+      }
+
+      // Criar nova transação pendente
+      const pendingTransaction = await this.prisma.ofxPendingTransaction.create({
+        data: {
+          ofxImportId: importId,
+          title,
+          description: fixedName || fixedMemo || `Transação OFX - ${TRNTYPE}`,
+          amount: amountInCents,
+          type,
+          transactionDate,
+          fitid: FITID,
+          trntype: TRNTYPE,
+          checknum: CHECKNUM,
+          memo: fixedMemo,
+          name: fixedName,
+        },
+      });
+
+      console.log(`✅ Transação pendente criada: ${pendingTransaction.id}`);
+
+      // Tentar categorização automática com regex
+      console.log('\n🤖 === DEBUG OFX - INICIANDO CATEGORIZAÇÃO ===');
+      console.log(`📊 Transação pendente criada: ${pendingTransaction.id}`);
+      console.log(`📝 Dados para categorização:`);
+      console.log(`   Título: "${title}"`);
+      console.log(`   Descrição: "${fixedName || fixedMemo || ''}"`);
+      console.log(`   Valor: ${amountInCents} centavos`);
+      console.log(`   Tipo: ${type}`);
+      
+      try {
+        const categorySuggestion = await this.aiCategorizationService.suggestCategoryForTransaction(
+          title,
+          fixedName || fixedMemo || '',
+          amountInCents,
+          type,
+        );
+
+        console.log('\n📋 Resultado da categorização:');
+        if (categorySuggestion) {
+          console.log(`   ✅ Sugestão recebida:`);
+          console.log(`      Categoria: ${categorySuggestion.categoryName}`);
+          console.log(`      Confiança: ${categorySuggestion.confidence}%`);
+          
+          // Atualizar a transação pendente com a sugestão
+          await this.aiCategorizationService.updateOfxPendingTransactionCategory(
+            pendingTransaction.id,
+            categorySuggestion.categoryId,
+            categorySuggestion.confidence,
+          );
+          
+          console.log(`   💾 Sugestão salva na transação pendente`);
+        } else {
+          console.log(`   ❌ Nenhuma sugestão recebida`);
+        }
+      } catch (error) {
+        // Log do erro mas não falhar a importação
+        console.error('❌ Erro na categorização automática:', error);
+        console.log('⚠️ Transação será importada sem categorização automática');
+      }
+      
+      console.log('🤖 === FIM DEBUG OFX CATEGORIZAÇÃO ===\n');
+
+      // Tentar sugestão de método de pagamento automática com regex
+      console.log('\n💳 === DEBUG OFX - INICIANDO SUGESTÃO DE MÉTODO DE PAGAMENTO ===');
+      console.log(`📊 Transação pendente: ${pendingTransaction.id}`);
+      console.log(`📝 Dados para sugestão de método de pagamento:`);
+      console.log(`   Título: "${title}"`);
+      console.log(`   Descrição: "${fixedName || fixedMemo || ''}"`);
+      console.log(`   Valor: ${amountInCents} centavos`);
+      console.log(`   Tipo: ${type}`);
+      
+      try {
+        const paymentMethodSuggestion = await this.paymentMethodSuggestionService.suggestPaymentMethodForTransaction(
+          title,
+          fixedName || fixedMemo || '',
+          amountInCents,
+          type,
+        );
+
+        console.log('\n💳 Resultado da sugestão de método de pagamento:');
+        if (paymentMethodSuggestion) {
+          console.log(`   ✅ Sugestão recebida:`);
+          console.log(`      Método: ${paymentMethodSuggestion.paymentMethodName}`);
+          console.log(`      Confiança: ${paymentMethodSuggestion.confidence}%`);
+          
+          // Atualizar a transação pendente com a sugestão
+          await this.paymentMethodSuggestionService.updateOfxPendingTransactionPaymentMethod(
+            pendingTransaction.id,
+            paymentMethodSuggestion.paymentMethodId,
+            paymentMethodSuggestion.confidence,
+          );
+          
+          console.log(`   💾 Sugestão salva na transação pendente`);
+        } else {
+          console.log(`   ❌ Nenhuma sugestão recebida`);
+        }
+      } catch (error) {
+        // Log do erro mas não falhar a importação
+        console.error('❌ Erro na sugestão de método de pagamento automática:', error);
+        console.log('⚠️ Transação será importada sem sugestão de método de pagamento automática');
+      }
+      
+      console.log('💳 === FIM DEBUG OFX SUGESTÃO DE MÉTODO DE PAGAMENTO ===\n');
+
     } catch (error) {
-      // Log do erro mas não falhar a importação
-      console.error('❌ Erro na categorização automática:', error);
+      // Log do erro mas não falhar a importação completa
+      console.error('❌ Erro ao processar transação OFX:', error);
+      console.error('Dados da transação:', ofxTransaction);
+      console.log('⚠️ Transação será pulada devido ao erro');
     }
-    
-    console.log('🤖 === FIM DEBUG OFX CATEGORIZAÇÃO ===\n');
   }
 
   private parseOfxDate(dateString: string): Date {
-    // Formato OFX: YYYYMMDDHHMMSS
-    const year = parseInt(dateString.substring(0, 4));
-    const month = parseInt(dateString.substring(4, 6)) - 1; // Mês é 0-indexed
-    const day = parseInt(dateString.substring(6, 8));
-    const hour = parseInt(dateString.substring(8, 10));
-    const minute = parseInt(dateString.substring(10, 12));
-    const second = parseInt(dateString.substring(12, 14));
+    if (!dateString || dateString.length < 8) {
+      throw new Error(`Formato de data OFX inválido: ${dateString}`);
+    }
 
-    return new Date(year, month, day, hour, minute, second);
+    try {
+      // Formato OFX padrão: YYYYMMDDHHMMSS ou YYYYMMDD
+      const year = parseInt(dateString.substring(0, 4));
+      const month = parseInt(dateString.substring(4, 6)) - 1; // Mês é 0-indexed
+      const day = parseInt(dateString.substring(6, 8));
+      
+      // Validar se os valores são válidos
+      if (isNaN(year) || isNaN(month) || isNaN(day)) {
+        throw new Error(`Valores de data inválidos: year=${year}, month=${month}, day=${day}`);
+      }
+
+      if (year < 1900 || year > 2100) {
+        throw new Error(`Ano fora do range válido: ${year}`);
+      }
+
+      if (month < 0 || month > 11) {
+        throw new Error(`Mês inválido: ${month + 1}`);
+      }
+
+      if (day < 1 || day > 31) {
+        throw new Error(`Dia inválido: ${day}`);
+      }
+
+      let hour = 0;
+      let minute = 0;
+      let second = 0;
+
+      // Se tem informações de hora (formato YYYYMMDDHHMMSS)
+      if (dateString.length >= 14) {
+        hour = parseInt(dateString.substring(8, 10));
+        minute = parseInt(dateString.substring(10, 12));
+        second = parseInt(dateString.substring(12, 14));
+
+        // Validar hora, minuto e segundo
+        if (isNaN(hour) || hour < 0 || hour > 23) {
+          console.warn(`Hora inválida: ${hour}, usando 0`);
+          hour = 0;
+        }
+
+        if (isNaN(minute) || minute < 0 || minute > 59) {
+          console.warn(`Minuto inválido: ${minute}, usando 0`);
+          minute = 0;
+        }
+
+        if (isNaN(second) || second < 0 || second > 59) {
+          console.warn(`Segundo inválido: ${second}, usando 0`);
+          second = 0;
+        }
+      }
+
+      const date = new Date(year, month, day, hour, minute, second);
+      
+      // Validar se a data criada é válida
+      if (isNaN(date.getTime())) {
+        throw new Error(`Data inválida criada: ${dateString}`);
+      }
+
+      return date;
+
+    } catch (error) {
+      throw new Error(`Erro ao processar data OFX "${dateString}": ${error.message}`);
+    }
   }
 
   private generateTransactionTitle(trntype: string, memo: string, checknum: string): string {
-    // Usar memo corrigido se disponível
-    if (memo && memo.trim().length > 0) {
-      return memo.trim();
+    // Validar e limpar parâmetros
+    const cleanMemo = memo ? memo.trim() : '';
+    const cleanChecknum = checknum ? checknum.trim() : '';
+    const cleanTrntype = trntype ? trntype.trim() : 'OTHER';
+
+    // Usar memo corrigido se disponível e não vazio
+    if (cleanMemo && cleanMemo.length > 0) {
+      return cleanMemo;
     }
 
-    // Usar número do cheque se disponível
-    if (checknum) {
-      return `Cheque ${checknum}`;
+    // Usar número do cheque se disponível e não vazio
+    if (cleanChecknum && cleanChecknum.length > 0) {
+      return `Cheque ${cleanChecknum}`;
     }
 
     // Mapear tipos OFX para títulos mais legíveis
@@ -412,7 +576,7 @@ export class OfxImportService {
       'OTHER': 'Outro',
     };
 
-    return typeMap[trntype] || `Transação ${trntype}`;
+    return typeMap[cleanTrntype] || `Transação ${cleanTrntype}`;
   }
 
   async findAll(): Promise<OfxImport[]> {
@@ -456,6 +620,8 @@ export class OfxImportService {
           include: {
             suggestedCategory: true,
             finalCategory: true,
+            suggestedPaymentMethod: true,
+            finalPaymentMethod: true,
           },
           orderBy: {
             transactionDate: 'desc',

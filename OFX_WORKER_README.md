@@ -7,7 +7,7 @@ O sistema de importação OFX agora funciona de forma assíncrona com um worker 
 - ✅ **Upload imediato**: Retorna resposta instantânea
 - ✅ **Processamento em background**: Worker processa sem bloquear
 - ✅ **Acompanhamento de progresso**: Status em tempo real
-- ✅ **Categorização automática**: ChatGPT categoriza durante importação
+- ✅ **Categorização automática**: Regex categoriza durante importação
 - ✅ **Tratamento de erros**: Logs detalhados e fallbacks
 
 ## 🔄 Fluxo de Trabalho

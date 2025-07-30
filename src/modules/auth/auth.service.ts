@@ -28,45 +28,21 @@ export class AuthService {
     // Hash da senha
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Criar usuário
+    // Criar usuário (não aprovado por padrão)
     const user = await this.prisma.user.create({
       data: {
         email,
         password: hashedPassword,
         name,
+        isApproved: false, // Usuário precisa ser aprovado
       },
     });
 
-    // Criar permissões padrão para o módulo financeiro
-    const financialModule = await this.prisma.module.findFirst({
-      where: { name: 'financeiro' },
-    });
-
-    if (financialModule) {
-      // Criar permissões básicas para o módulo financeiro
-      const defaultPermissions = [
-        { resource: 'financial_transactions', action: 'read' },
-        { resource: 'financial_categories', action: 'read' },
-        { resource: 'payment_methods', action: 'read' },
-      ];
-
-      await Promise.all(
-        defaultPermissions.map(permission =>
-          this.prisma.userPermission.create({
-            data: {
-              userId: user.id,
-              moduleId: financialModule.id,
-              resource: permission.resource,
-              action: permission.action,
-              isActive: true,
-            },
-          })
-        )
-      );
-    }
-
     const { password: _, ...userWithoutPassword } = user;
-    return userWithoutPassword;
+    return {
+      ...userWithoutPassword,
+      message: 'Cadastro realizado com sucesso! Aguarde a aprovação de um administrador para acessar o sistema.',
+    };
   }
 
   async login(loginDto: LoginDto) {
@@ -75,6 +51,11 @@ export class AuthService {
     const user = await this.validateUser(email, password);
     if (!user) {
       throw new UnauthorizedException('Credenciais inválidas');
+    }
+
+    // Verificar se o usuário está aprovado
+    if (!user.isApproved) {
+      throw new UnauthorizedException('Conta ainda não foi aprovada. Entre em contato com o administrador.');
     }
 
     const payload: JwtPayload = { email: user.email, sub: user.id };
@@ -86,6 +67,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         isAdmin: user.isAdmin,
+        isApproved: user.isApproved,
       },
     };
   }

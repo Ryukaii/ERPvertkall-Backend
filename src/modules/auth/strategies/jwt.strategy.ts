@@ -53,7 +53,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         throw new UnauthorizedException('User not found');
       }
 
-      this.logger.debug(`User validated successfully: ${user.email}`);
+      this.logger.debug(`User validated successfully: ${user.email}, isAdmin: ${user.isAdmin}`);
+      console.log('🔍 JWT Strategy DEBUG - User object:', {
+        id: user.id,
+        email: user.email,
+        isAdmin: user.isAdmin,
+        userPermissionsCount: user.userPermissions?.length || 0
+      });
       return user;
     } catch (error) {
       this.logger.error(`JWT validation error: ${error.message}`, error.stack);

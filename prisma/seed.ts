@@ -18,6 +18,39 @@ async function main() {
     },
   });
 
+  const bancosModule = await prisma.module.upsert({
+    where: { name: 'bancos' },
+    update: {},
+    create: {
+      name: 'bancos',
+      displayName: 'Módulo de Bancos',
+      description: 'Gestão de bancos e transações bancárias',
+      isActive: true,
+    },
+  });
+
+  const unidadesModule = await prisma.module.upsert({
+    where: { name: 'unidades' },
+    update: {},
+    create: {
+      name: 'unidades',
+      displayName: 'Módulo de Unidades',
+      description: 'Gestão de unidades organizacionais',
+      isActive: true,
+    },
+  });
+
+  const tagsModule = await prisma.module.upsert({
+    where: { name: 'tags' },
+    update: {},
+    create: {
+      name: 'tags',
+      displayName: 'Módulo de Tags',
+      description: 'Gestão de tags para categorização',
+      isActive: true,
+    },
+  });
+
   // Criar usuário admin
   const hashedPassword = await bcrypt.hash('admin123', 10);
   const adminUser = await prisma.user.upsert({
@@ -32,10 +65,14 @@ async function main() {
   });
 
   // Criar permissões para o admin
-  const resources = ['categories', 'transactions', 'payment_methods', 'recurring_transactions'];
+  const financeiroResources = ['categories', 'transactions', 'payment_methods', 'recurring_transactions'];
+  const bancosResources = ['banks', 'bank_transactions', 'ofx_imports', 'transfers', 'ai_categorization'];
+  const unidadesResources = ['unidades'];
+  const tagsResources = ['tags'];
   const actions = ['read', 'write'];
 
-  for (const resource of resources) {
+  // Permissões do módulo financeiro
+  for (const resource of financeiroResources) {
     for (const action of actions) {
       await prisma.userPermission.upsert({
         where: {
@@ -50,6 +87,78 @@ async function main() {
         create: {
           userId: adminUser.id,
           moduleId: financeiroModule.id,
+          resource,
+          action,
+          isActive: true,
+        },
+      });
+    }
+  }
+
+  // Permissões do módulo bancos
+  for (const resource of bancosResources) {
+    for (const action of actions) {
+      await prisma.userPermission.upsert({
+        where: {
+          userId_moduleId_resource_action: {
+            userId: adminUser.id,
+            moduleId: bancosModule.id,
+            resource,
+            action,
+          },
+        },
+        update: { isActive: true },
+        create: {
+          userId: adminUser.id,
+          moduleId: bancosModule.id,
+          resource,
+          action,
+          isActive: true,
+        },
+      });
+    }
+  }
+
+  // Permissões do módulo unidades
+  for (const resource of unidadesResources) {
+    for (const action of actions) {
+      await prisma.userPermission.upsert({
+        where: {
+          userId_moduleId_resource_action: {
+            userId: adminUser.id,
+            moduleId: unidadesModule.id,
+            resource,
+            action,
+          },
+        },
+        update: { isActive: true },
+        create: {
+          userId: adminUser.id,
+          moduleId: unidadesModule.id,
+          resource,
+          action,
+          isActive: true,
+        },
+      });
+    }
+  }
+
+  // Permissões do módulo tags
+  for (const resource of tagsResources) {
+    for (const action of actions) {
+      await prisma.userPermission.upsert({
+        where: {
+          userId_moduleId_resource_action: {
+            userId: adminUser.id,
+            moduleId: tagsModule.id,
+            resource,
+            action,
+          },
+        },
+        update: { isActive: true },
+        create: {
+          userId: adminUser.id,
+          moduleId: tagsModule.id,
           resource,
           action,
           isActive: true,

@@ -13,16 +13,23 @@ import { BankTransactionService } from './bank-transaction.service';
 import { CreateBankTransactionDto } from './dto/create-bank-transaction.dto';
 import { UpdateBankTransactionDto } from './dto/update-bank-transaction.dto';
 import { FilterBankTransactionDto } from './dto/filter-bank-transaction.dto';
+import { CreateTransferDto } from './dto/create-transfer.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { ModuleAccessGuard } from '../../common/guards/module-access.guard';
+import { PermissionGuard } from '../../common/guards/permission.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { RequireModule } from '../../common/decorators/module.decorator';
+import { Permission } from '../../common/decorators/permission.decorator';
 import { User, FinancialTransactionStatus } from '@prisma/client';
 
 @Controller('bancos/:bankId/transactions')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, ModuleAccessGuard, PermissionGuard)
+@RequireModule('bancos')
 export class BankTransactionController {
   constructor(private readonly bankTransactionService: BankTransactionService) {}
 
   @Post()
+  @Permission('bancos', 'bank_transactions', 'write')
   create(
     @Param('bankId') bankId: string,
     @Body() createTransactionDto: CreateBankTransactionDto,
@@ -32,6 +39,7 @@ export class BankTransactionController {
   }
 
   @Get()
+  @Permission('bancos', 'bank_transactions', 'read')
   findAll(
     @Param('bankId') bankId: string,
     @CurrentUser() user: User,
@@ -41,6 +49,7 @@ export class BankTransactionController {
   }
 
   @Get('summary')
+  @Permission('bancos', 'bank_transactions', 'read')
   getSummary(
     @Param('bankId') bankId: string,
     @CurrentUser() user: User,
@@ -51,6 +60,7 @@ export class BankTransactionController {
   }
 
   @Get(':id')
+  @Permission('bancos', 'bank_transactions', 'read')
   findOne(
     @Param('bankId') bankId: string,
     @Param('id') id: string,
@@ -60,6 +70,7 @@ export class BankTransactionController {
   }
 
   @Patch(':id')
+  @Permission('bancos', 'bank_transactions', 'write')
   update(
     @Param('bankId') bankId: string,
     @Param('id') id: string,
@@ -70,6 +81,7 @@ export class BankTransactionController {
   }
 
   @Patch(':id/status')
+  @Permission('bancos', 'bank_transactions', 'write')
   updateStatus(
     @Param('bankId') bankId: string,
     @Param('id') id: string,
@@ -80,6 +92,7 @@ export class BankTransactionController {
   }
 
   @Delete(':id')
+  @Permission('bancos', 'bank_transactions', 'write')
   remove(
     @Param('bankId') bankId: string,
     @Param('id') id: string,

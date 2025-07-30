@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { PrismaService } from '../../config/prisma.service';
 import { AiCategorizationService, CategorySuggestion } from './ai-categorization.service';
 import { FinancialTransactionType, FinancialTransactionStatus } from '@prisma/client';
+import { TagsService } from '../tags/tags.service';
 
 export interface UpdateResult {
   id: string;
@@ -15,6 +16,7 @@ export class OfxPendingTransactionService {
   constructor(
     private prisma: PrismaService,
     private aiCategorizationService: AiCategorizationService,
+    private tagsService: TagsService,
   ) {}
 
   async getByImportId(importId: string) {
@@ -26,6 +28,11 @@ export class OfxPendingTransactionService {
           include: {
             suggestedCategory: true,
             finalCategory: true,
+            tags: {
+              include: {
+                tag: true,
+              },
+            },
           },
           orderBy: {
             transactionDate: 'desc',
@@ -268,5 +275,53 @@ export class OfxPendingTransactionService {
       },
       transactions: pendingTransactions,
     };
+  }
+
+  async updateTags(transactionId: string, tagIds: string[]) {
+    // Verificar se a transação existe
+    const transaction = await this.prisma.ofxPendingTransaction.findUnique({
+      where: { id: transactionId },
+    });
+
+    if (!transaction) {
+      throw new NotFoundException('Transação pendente não encontrada');
+    }
+
+    // Validar tags se fornecidas
+    if (tagIds.length > 0) {
+      const validTags = await this.tagsService.findByIds(tagIds);
+      if (validTags.length !== tagIds.length) {
+        throw new BadRequestException('Uma ou mais tags são inválidas ou estão inativas');
+      }
+    }
+
+    // Remover tags existentes
+    await this.prisma.ofxPendingTransactionTag.deleteMany({
+      where: { ofxPendingTransactionId: transactionId },
+    });
+
+    // Adicionar novas tags
+    if (tagIds.length > 0) {
+      await this.prisma.ofxPendingTransactionTag.createMany({
+        data: tagIds.map(tagId => ({
+          ofxPendingTransactionId: transactionId,
+          tagId,
+        })),
+      });
+    }
+
+    // Retornar transação atualizada com tags
+    return this.prisma.ofxPendingTransaction.findUnique({
+      where: { id: transactionId },
+      include: {
+        suggestedCategory: true,
+        finalCategory: true,
+        tags: {
+          include: {
+            tag: true,
+          },
+        },
+      },
+    });
   }
 } 

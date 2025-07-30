@@ -8,8 +8,10 @@ import { FinancialTransactionController } from './financial-transaction.controll
 import { RecurringPaymentService } from './recurring-payment.service';
 import { RecurringPaymentController } from './recurring-payment.controller';
 import { PrismaService } from '../../config/prisma.service';
+import { TagsModule } from '../tags/tags.module';
 
 @Module({
+  imports: [TagsModule],
   controllers: [
     FinancialCategoryController,
     PaymentMethodController,

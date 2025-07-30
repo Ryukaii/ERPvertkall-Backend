@@ -11,13 +11,15 @@ export class PermissionGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const permission = this.reflector.get<{ module: string; resource: string; action: string }>(
+    console.log('🚀 PermissionGuard: STARTING canActivate method');
+    const permission = this.reflector.getAllAndOverride<{ module: string; resource: string; action: string }>(
       PERMISSION_KEY,
-      context.getHandler(),
+      [context.getHandler(), context.getClass()],
     );
+    console.log('🔍 PermissionGuard: Required permission:', permission);
     
     if (!permission) {
-      return true; // Se não há permissão específica requerida, permite acesso
+      return false; // Se não há permissão específica requerida, nega acesso por segurança
     }
 
     const { module: requiredModule, resource: requiredResource, action: requiredAction } = permission;
@@ -28,6 +30,22 @@ export class PermissionGuard implements CanActivate {
     if (!user) {
       throw new ForbiddenException('Usuário não autenticado');
     }
+
+    // Se o usuário é admin, tem todas as permissões - verificar direto do objeto user
+    console.log('🔍 PermissionGuard DEBUG:', {
+      userId: user.id,
+      userEmail: user.email,
+      isAdmin: user.isAdmin,
+      userKeys: Object.keys(user),
+      requiredPermission: `${requiredModule}:${requiredResource}:${requiredAction}`
+    });
+    
+    if (user.isAdmin) {
+      console.log('✅ PermissionGuard: User is admin, granting access');
+      return true;
+    }
+    
+    console.log('⚠️ PermissionGuard: User is NOT admin, checking specific permissions...');
 
     const dbUser = await this.prisma.user.findUnique({
       where: { id: user.id },

@@ -9,7 +9,11 @@ import {
 } from '@nestjs/common';
 import { AiCategorizationService } from './ai-categorization.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { ModuleAccessGuard } from '../../common/guards/module-access.guard';
+import { PermissionGuard } from '../../common/guards/permission.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { RequireModule } from '../../common/decorators/module.decorator';
+import { Permission } from '../../common/decorators/permission.decorator';
 import { User } from '@prisma/client';
 import { 
   CategorizeTransactionDto, 
@@ -18,16 +22,19 @@ import {
 } from './dto/categorization-response.dto';
 
 @Controller('ai-categorization')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, ModuleAccessGuard, PermissionGuard)
+@RequireModule('bancos')
 export class AiCategorizationController {
   constructor(private readonly aiCategorizationService: AiCategorizationService) {}
 
   @Get('pending')
+  @Permission('bancos', 'ai_categorization', 'read')
   async getPendingCategorizationTransactions(@CurrentUser() user: User) {
     return this.aiCategorizationService.getPendingCategorizationTransactions(user.id);
   }
 
   @Post('suggest/:transactionId')
+  @Permission('bancos', 'ai_categorization', 'write')
   async suggestCategoryForTransaction(
     @Param('transactionId') transactionId: string,
     @CurrentUser() user: User,
@@ -51,7 +58,7 @@ export class AiCategorizationController {
       throw new BadRequestException('Transação já possui categoria');
     }
 
-    // Obter sugestão do ChatGPT
+    // Obter sugestão por regex
     const suggestion = await this.aiCategorizationService.suggestCategoryForTransaction(
       transaction.title,
       transaction.description || '',
@@ -73,8 +80,8 @@ export class AiCategorizationController {
       // Informação sobre a sugestão
       autoApplied: false, // Sempre false, pois apenas sugere
       message: suggestion 
-        ? `Sugestão gerada: ${suggestion.categoryName} (${suggestion.confidence}% confiança)`
-        : 'Nenhuma sugestão gerada',
+        ? `Sugestão por regex: ${suggestion.categoryName} (${suggestion.confidence}% confiança)`
+        : 'Nenhuma regra regex aplicável encontrada',
     };
   }
 
@@ -153,7 +160,7 @@ export class AiCategorizationController {
     }
 
     return {
-      message: `Sugestões geradas para ${suggestions.length} transações`,
+      message: `Sugestões por regex geradas para ${suggestions.length} transações`,
       suggestions,
     };
   }

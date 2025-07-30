@@ -8,9 +8,10 @@ import { BancosModule } from './modules/bancos/bancos.module';
 import { PrismaService } from './config/prisma.service';
 import { ConfigService } from './config/config.service';
 import { UnidadesModule } from './modules/unidades/unidades.module';
+import { TagsModule } from './modules/tags/tags.module';
 
 @Module({
-  imports: [AuthModule, FinanceiroModule, UsersModule, BancosModule, UnidadesModule],
+  imports: [AuthModule, FinanceiroModule, UsersModule, BancosModule, UnidadesModule, TagsModule],
   controllers: [AppController],
   providers: [AppService, PrismaService, ConfigService],
 })

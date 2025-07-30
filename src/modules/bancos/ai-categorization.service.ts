@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../config/prisma.service';
-import OpenAI from 'openai';
 import { FinancialTransactionType } from '@prisma/client';
 
 export interface CategorySuggestion {
@@ -14,22 +13,11 @@ export interface CategorySuggestion {
 @Injectable()
 export class AiCategorizationService {
   private readonly logger = new Logger(AiCategorizationService.name);
-  private openai: OpenAI;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
-  ) {
-    const apiKey = this.configService.openaiApiKey;
-    if (!apiKey) {
-      this.logger.warn('OPENAI_API_KEY não configurada. Categorização automática desabilitada.');
-      return;
-    }
-
-    this.openai = new OpenAI({
-      apiKey,
-    });
-  }
+  ) {}
 
   async suggestCategoryForTransaction(
     transactionTitle: string,
@@ -37,11 +25,6 @@ export class AiCategorizationService {
     amount: number,
     type: FinancialTransactionType,
   ): Promise<CategorySuggestion | null> {
-    if (!this.openai) {
-      this.logger.warn('OpenAI não configurado. Retornando null para sugestão de categoria.');
-      return null;
-    }
-
     try {
       // Mapear DEBIT/CREDIT para PAYABLE/RECEIVABLE para buscar categorias apropriadas
       let categoryType: FinancialTransactionType;
@@ -69,196 +52,162 @@ export class AiCategorizationService {
         return null;
       }
 
-      // Preparar contexto para o ChatGPT
-      const categoriesList = availableCategories
-        .map(cat => `- ${cat.name}${cat.description ? ` (${cat.description})` : ''}`)
-        .join('\n');
-
-      const prompt = this.buildPrompt(
-        transactionTitle,
-        transactionDescription,
-        amount,
-        type,
-        categoriesList,
-      );
-
-      // ===== DEBUG: Log resumido da transação =====
-      console.log(`\n🤖 === CATEGORIZAÇÃO: "${transactionTitle}" ===`);
-      console.log(`📊 Valor: R$ ${(amount / 100).toFixed(2)} | Tipo: ${type}`);
-      console.log(`📋 Categorias disponíveis: ${availableCategories.length}`);
-
-      const completion = await this.openai.chat.completions.create({
-        model: 'gpt-4.1-nano-2025-04-14',
-        messages: [
-          {
-            role: 'system',
-            content: `Você é um assistente especializado em categorização financeira. 
-            Sua tarefa é analisar transações bancárias e sugerir a categoria mais apropriada 
-            baseada no título, descrição e valor da transação. 
-            
-            Regras importantes:
-            1. Analise cuidadosamente o contexto da transação
-            2. Considere o valor da transação para determinar a categoria
-            3. Para valores negativos (despesas), use categorias PAYABLE
-            4. Para valores positivos (receitas), use categorias RECEIVABLE
-            5. Se não houver uma categoria adequada, sugira a mais próxima
-            6. Forneça uma explicação clara do seu raciocínio
-            7. Atribua uma confiança de 0 a 100 baseada na certeza da categorização
-            
-            Regras específicas para categorização:
-            - Transações com "VT" (Vale Transporte) ou "VR" (Vale Refeição) devem ser categorizadas como "Folha"
-            - Exemplos: "Pagamento VT da Semana", "Pagamento VR", "VT KAROLYNA", "VR funcionário"
-            - Transações de salários, pagamentos de funcionários, VT, VR = categoria "Folha"
-            - Transações de energia elétrica = categoria "Energia Elétrica"
-            - Transações de telefone/internet = categoria "Telefone/Internet"
-            - Transações de aluguel = categoria "Aluguel"
-            - Transações de impostos = categoria "Impostos"
-            - Transações de manutenção = categoria "Manutenção"
-            - Transações de marketing = categoria "Marketing"
-            - Transações de material de escritório = categoria "Material de Escritório"
-            - Transações de vendas = categoria "Vendas"
-            - Transações de prestação de serviços = categoria "Prestação de Serviços"
-            - Transações de juros/rendimentos = categoria "Juros e Rendimentos"`,
-          },
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        temperature: 0.3, // Baixa temperatura para respostas mais consistentes
-        max_tokens: 500,
-      });
-
-      const response = completion.choices[0]?.message?.content;
-      if (!response) {
-        this.logger.error('Resposta vazia do ChatGPT');
-        return null;
+      // ===== REGRAS REGEX PARA CATEGORIZAÇÃO AUTOMÁTICA =====
+      const regexMatch = this.matchRegexRules(transactionTitle, transactionDescription, availableCategories);
+      if (regexMatch) {
+        console.log(`🎯 Categorização por regex aplicada: "${transactionTitle}" -> ${regexMatch.categoryName} (${regexMatch.confidence}%)`);
+        console.log(`📝 Motivo: ${regexMatch.reasoning}`);
+        return regexMatch;
       }
 
-
-
-      // Parsear a resposta do ChatGPT
-      const suggestion = this.parseChatGptResponse(response, availableCategories);
-      
-      // ===== DEBUG: Log do resultado =====
-      if (suggestion) {
-        console.log(`✅ RESULTADO: ${suggestion.categoryName} (${suggestion.confidence}%)`);
-        if (suggestion.confidence >= 70) {
-          console.log(`🎯 APLICADO AUTOMATICAMENTE`);
-        } else {
-          console.log(`⚠️ PENDENTE (confiança < 70%)`);
-        }
-      } else {
-        console.log(`❌ FALHA: Nenhuma sugestão gerada`);
-      }
-      console.log(`🤖 === FIM CATEGORIZAÇÃO ===\n`);
-      
-      this.logger.log(`Sugestão de categoria para "${transactionTitle}": ${suggestion?.categoryName} (confiança: ${suggestion?.confidence}%)`);
-      
-      return suggestion;
+      console.log(`❌ Nenhuma regra regex aplicável encontrada para: "${transactionTitle}"`);
+      return null;
 
     } catch (error) {
-      this.logger.error('Erro ao obter sugestão de categoria do ChatGPT:', error);
+      this.logger.error('Erro ao obter sugestão de categoria:', error);
       return null;
     }
   }
 
-  private buildPrompt(
-    title: string,
-    description: string,
-    amount: number,
-    type: FinancialTransactionType,
-    categoriesList: string,
-  ): string {
-    const amountFormatted = (amount / 100).toFixed(2);
-    
-    // Mapear tipo para texto descritivo
-    let typeText = 'despesa';
-    if (type === 'PAYABLE' || type === 'DEBIT') {
-      typeText = 'despesa';
-    } else if (type === 'RECEIVABLE' || type === 'CREDIT') {
-      typeText = 'receita';
-    }
-    
-    const prompt = `Analise a seguinte transação bancária e sugira a categoria mais apropriada:
-
-**Transação:**
-- Título: "${title}"
-- Descrição: "${description || 'N/A'}"
-- Valor: R$ ${amountFormatted} (${typeText})
-- Tipo: ${type}
-
-**Categorias disponíveis:**
-${categoriesList}
-
-**Regras específicas de categorização:**
-- VT (Vale Transporte) ou VR (Vale Refeição) = "Folha"
-- Exemplos: "Pagamento VT da Semana KAROLYNA", "Pagamento VR", "VT funcionário"
-- Salários, pagamentos de funcionários = "Folha"
-- Energia elétrica = "Energia Elétrica"
-- Telefone/internet = "Telefone/Internet"
-- Aluguel = "Aluguel"
-- Impostos = "Impostos"
-- Manutenção = "Manutenção"
-- Marketing = "Marketing"
-- Material de escritório = "Material de Escritório"
-- Vendas = "Vendas"
-- Prestação de serviços = "Prestação de Serviços"
-- Juros/rendimentos = "Juros e Rendimentos"
-
-**Instruções:**
-1. Analise o contexto da transação
-2. Escolha a categoria mais apropriada da lista
-3. Atribua um nível de confiança (0-100)
-
-**Formato da resposta:**
-Categoria: [nome da categoria]
-Confiança: [0-100]`;
-
-    return prompt;
-  }
-
-  private parseChatGptResponse(
-    response: string,
+  /**
+   * Aplica regras regex para categorização automática
+   */
+  private matchRegexRules(
+    transactionTitle: string,
+    transactionDescription: string,
     availableCategories: Array<{ id: string; name: string; description: string | null }>,
   ): CategorySuggestion | null {
-    try {
-      // Extrair informações da resposta usando regex
-      const categoryMatch = response.match(/Categoria:\s*(.+)/i);
-      const confidenceMatch = response.match(/Confiança:\s*(\d+)/i);
+    // Combinar título e descrição para busca
+    const searchText = `${transactionTitle} ${transactionDescription}`.toUpperCase();
+    
+    console.log(`🔍 Analisando regex para: "${searchText}"`);
+    
+    // Regras regex para categorias específicas
+    const regexRules = [
+      {
+        pattern: /\b(VT|VR)\b/i,
+        categoryName: 'Folha',
+        confidence: 100,
+        reasoning: 'Identificado como VT/VR (Vale Transporte/Refeição) por regex',
+      },
+      {
+        pattern: /\b(PREMIACAO|premiacao)\b/i,
+        categoryName: 'Folha',
+        confidence: 100,
+        reasoning: 'Identificado como premiação por regex',
+      },
+      {
+        pattern: /\b(LEADS|leads)\b/i,
+        categoryName: 'Folha',
+        confidence: 100,
+        reasoning: 'Identificado como leads por regex',
+      },
+      {
+        pattern: /\b(IOF)\b/i,
+        categoryName: 'Impostos',
+        confidence: 100,
+        reasoning: 'Identificado como IOF (Imposto sobre Operações Financeiras) por regex',
+      },
+      {
+        pattern: /\b(LUIS\s+FELIPE\s+LEITE\s+BARBOZA)\b/i,
+        categoryName: 'Aporte Financeiro',
+        confidence: 100,
+        reasoning: 'Identificado como transação de LUIS FELIPE LEITE BARBOZA por regex',
+      },
+      {
+        pattern: /\b(RECEBIMENTO\s+PIX\s+[A-Z\s]+\s+\*\*\*\.\d+\.\d+-\*\*)\b/i,
+        categoryName: 'PARTICULAR',
+        confidence: 100,
+        reasoning: 'Identificado como recebimento PIX de pessoa física por regex',
+      },
+      {
+        pattern: /\b(ACB|ASSOCIAÇÃO\s+ACB|ACB\s+ASSOC)\b/i,
+        categoryName: 'Associação Medicas',
+        confidence: 100,
+        reasoning: 'Identificado como transação ACB por regex',
+      },
+      {
+        pattern: /\b(AMAI|AMAI\s+ASSOC|ASSOCIAÇÃO\s+AMAI)\b/i,
+        categoryName: 'Associação Medicas',
+        confidence: 100,
+        reasoning: 'Identificado como transação AMAI por regex',
+      },
+      {
+        pattern: /\b(AMHP|AMHP\s+ASSOC|ASSOCIAÇÃO\s+AMHP)\b/i,
+        categoryName: 'Associação Medicas',
+        confidence: 100,
+        reasoning: 'Identificado como transação AMHP por regex',
+      },
+      {
+        pattern: /\b(ASMEPRO|ASMEPRO\s+ASSOC|ASSOCIAÇÃO\s+ASMEPRO)\b/i,
+        categoryName: 'Associação Medicas',
+        confidence: 100,
+        reasoning: 'Identificado como transação ASMEPRO por regex',
+      },
+      {
+        pattern: /\b(ASSOCIACAO\s+MEDICA\s+DO\s+CORPO\s+CLIN\s+DO)\b/i,
+        categoryName: 'Associação Medicas',
+        confidence: 100,
+        reasoning: 'Identificado como transação ASSOCIACAO MEDICA DO CORPO CLIN DO por regex',
+      },
+      {
+        pattern: /\b(PARTICULAR|PART|PARTIC)\b/i,
+        categoryName: 'PARTICULAR',
+        confidence: 100,
+        reasoning: 'Identificado como transação PARTICULAR por regex',
+      },
+      {
+        pattern: /\b(VENDA|VENDAS|VEND|VEND\s+PROD|PRODUTO|SERVIÇO|SERVICO)\b/i,
+        categoryName: 'Vendas',
+        confidence: 100,
+        reasoning: 'Identificado como venda por regex',
+      },
+      {
+        pattern: /\b(JUROS|RENDIMENTO|RENDIMENTOS|JURO|REND|INVESTIMENTO|INVEST)\b/i,
+        categoryName: 'Juros e Rendimentos',
+        confidence: 100,
+        reasoning: 'Identificado como juros/rendimentos por regex',
+      },
+      {
+        pattern: /\b(PRESTADOR|prestador)\b/i,
+        categoryName: 'Prestação de Serviço',
+        confidence: 100,
+        reasoning: 'Identificado como prestador de serviço por regex',
+      },
+      {
+        pattern: /\b(OUTRAS\s+RECEITAS|OUTRA\s+RECEITA|RECEITA\s+DIVERSAS|RECEITA\s+EXTRA)\b/i,
+        categoryName: 'Outras Receitas',
+        confidence: 100,
+        reasoning: 'Identificado como outras receitas por regex',
+      },
+    ];
 
-      if (!categoryMatch || !confidenceMatch) {
-        this.logger.warn('Formato de resposta do ChatGPT inválido:', response);
-        return null;
+    // Aplicar regras regex
+    for (const rule of regexRules) {
+      if (rule.pattern.test(searchText)) {
+        console.log(`✅ Regex match encontrado: "${rule.pattern}" -> ${rule.categoryName}`);
+        
+        // Encontrar a categoria correspondente
+        const category = availableCategories.find(cat => 
+          cat.name.toUpperCase() === rule.categoryName.toUpperCase()
+        );
+
+        if (category) {
+          console.log(`🎯 Categoria encontrada: ${category.name} (ID: ${category.id})`);
+          return {
+            categoryId: category.id,
+            categoryName: category.name,
+            confidence: rule.confidence,
+            reasoning: rule.reasoning,
+          };
+        } else {
+          console.log(`⚠️ Categoria "${rule.categoryName}" não encontrada nas categorias disponíveis`);
+        }
       }
-
-      const suggestedCategoryName = categoryMatch[1].trim();
-      const confidence = parseInt(confidenceMatch[1], 10);
-
-      // Encontrar a categoria correspondente na lista disponível
-      const matchedCategory = availableCategories.find(cat =>
-        cat.name.toLowerCase() === suggestedCategoryName.toLowerCase()
-      );
-
-      if (!matchedCategory) {
-        this.logger.warn(`Categoria sugerida "${suggestedCategoryName}" não encontrada na lista disponível`);
-        return null;
-      }
-
-      const result = {
-        categoryId: matchedCategory.id,
-        categoryName: matchedCategory.name,
-        confidence: Math.min(Math.max(confidence, 0), 100), // Garantir que está entre 0-100
-        reasoning: '', // Removido reasoning
-      };
-
-      return result;
-
-    } catch (error) {
-      console.log('❌ Erro durante parsing:', error);
-      this.logger.error('Erro ao parsear resposta do ChatGPT:', error);
-      return null;
     }
+
+    console.log(`❌ Nenhuma regra regex aplicável encontrada`);
+    return null;
   }
 
   async categorizeTransaction(
@@ -267,16 +216,21 @@ Confiança: [0-100]`;
     confidence: number,
     reasoning: string,
   ): Promise<void> {
-          await this.prisma.financialTransaction.update({
+    try {
+      await this.prisma.financialTransaction.update({
         where: { id: transactionId },
         data: {
           categoryId,
-          // Adicionar metadados da categorização AI (pode ser expandido no futuro)
-          description: reasoning ? `${reasoning} (Categorização AI - ${confidence}% confiança)` : undefined,
+          // Adicionar metadados da categorização (pode ser expandido no futuro)
+          description: reasoning ? `${reasoning} (Categorização Regex - ${confidence}% confiança)` : undefined,
         },
       });
 
-    this.logger.log(`Transação ${transactionId} categorizada com categoria ID ${categoryId} (confiança: ${confidence}%)`);
+      this.logger.log(`Transação ${transactionId} categorizada com categoria ID ${categoryId} (confiança: ${confidence}%)`);
+    } catch (error) {
+      this.logger.error('Erro ao categorizar transação:', error);
+      throw error;
+    }
   }
 
   async getPendingCategorizationTransactions(userId: string): Promise<any[]> {
@@ -297,15 +251,10 @@ Confiança: [0-100]`;
     });
   }
 
-  // Novo método específico para transações OFX pendentes
+  // Método específico para transações OFX pendentes
   async suggestCategoryForOfxTransaction(
     pendingTransactionId: string,
   ): Promise<CategorySuggestion | null> {
-    if (!this.openai) {
-      this.logger.warn('OpenAI não configurado. Retornando null para sugestão de categoria.');
-      return null;
-    }
-
     try {
       // Buscar a transação OFX pendente
       const pendingTransaction = await this.prisma.ofxPendingTransaction.findUnique({
