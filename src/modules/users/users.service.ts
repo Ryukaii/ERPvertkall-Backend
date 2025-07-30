@@ -139,23 +139,40 @@ export class UsersService {
   }
 
   private async createDefaultPermissions(userId: string) {
-    // Criar permissões padrão para o módulo financeiro
-    const financialModule = await this.prisma.module.findFirst({
-      where: { name: 'financeiro' },
-    });
+    try {
+      // Criar permissões padrão para o módulo financeiro
+      const financialModule = await this.prisma.module.findFirst({
+        where: { name: 'financeiro' },
+      });
 
-    if (financialModule) {
-      // Criar permissões básicas para o módulo financeiro
+      if (!financialModule) {
+        console.warn('Módulo financeiro não encontrado. Permissões padrão não foram criadas.');
+        return;
+      }
+
+      // Definir permissões básicas para o módulo financeiro
       const defaultPermissions = [
         { resource: 'financial_transactions', action: 'read' },
         { resource: 'financial_categories', action: 'read' },
         { resource: 'payment_methods', action: 'read' },
       ];
 
+      // Usar upsert para evitar conflitos de constraint única
       await Promise.all(
         defaultPermissions.map(permission =>
-          this.prisma.userPermission.create({
-            data: {
+          this.prisma.userPermission.upsert({
+            where: {
+              userId_moduleId_resource_action: {
+                userId,
+                moduleId: financialModule.id,
+                resource: permission.resource,
+                action: permission.action,
+              },
+            },
+            update: {
+              isActive: true, // Reativar se já existir mas estiver inativo
+            },
+            create: {
               userId,
               moduleId: financialModule.id,
               resource: permission.resource,
@@ -165,6 +182,11 @@ export class UsersService {
           })
         )
       );
+
+      console.log(`Permissões padrão criadas/atualizadas para usuário ${userId}`);
+    } catch (error) {
+      console.error('Erro ao criar permissões padrão:', error);
+      throw new Error('Falha ao criar permissões padrão para o usuário');
     }
   }
 
