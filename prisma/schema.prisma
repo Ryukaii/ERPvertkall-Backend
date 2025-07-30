@@ -1,0 +1,354 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Tabela de usuários
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  isAdmin   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relacionamentos
+  userPermissions UserPermission[]
+  
+  // Relacionamentos com módulo financeiro
+  financialTransactions FinancialTransaction[]
+
+  @@map("users")
+}
+
+// Tabela de módulos do sistema
+model Module {
+  id          String @id @default(cuid())
+  name        String @unique // ex: "financeiro", "estoque", "vendas"
+  displayName String // ex: "Módulo Financeiro"
+  description String?
+  isActive    Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relacionamentos
+  userPermissions UserPermission[]
+
+  @@map("modules")
+}
+
+// Tabela de permissões específicas por usuário
+model UserPermission {
+  id        String @id @default(cuid())
+  userId    String
+  moduleId  String
+  resource  String // ex: "financial_transactions", "categories", "payment_methods"
+  action    String // ex: "read", "write", "delete"
+  isActive  Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relacionamentos
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, moduleId, resource, action])
+  @@map("user_permissions")
+}
+
+// === MÓDULO FINANCEIRO ===
+
+// Categorias financeiras
+model FinancialCategory {
+  id          String @id @default(cuid())
+  name        String @unique
+  description String?
+  type        FinancialTransactionType // RECEIVABLE ou PAYABLE
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relacionamentos
+  transactions FinancialTransaction[]
+  suggestedPendingTransactions OfxPendingTransaction[] @relation("SuggestedCategory")
+  finalPendingTransactions     OfxPendingTransaction[] @relation("FinalCategory")
+
+  @@map("financial_categories")
+}
+
+// Formas de pagamento
+model PaymentMethod {
+  id        String @id @default(cuid())
+  name      String @unique // ex: "PIX", "Boleto", "Cartão de Crédito"
+  isActive  Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relacionamentos
+  transactions FinancialTransaction[]
+  recurringPayments RecurringPayment[]
+
+  @@map("payment_methods")
+}
+
+// Transações financeiras (contas a pagar/receber E transações bancárias)
+model FinancialTransaction {
+  id          String @id @default(cuid())
+  title       String
+  description String?
+  amount      Int // Valor em centavos (R$99,99 -> 9999)
+  
+  // Campos para transações financeiras (contas a pagar/receber)
+  dueDate     DateTime?
+  paidDate    DateTime?
+  type        FinancialTransactionType
+  status      FinancialTransactionStatus @default(PENDING)
+  
+  // Campos para transações bancárias
+  transactionDate DateTime? // Data da transação bancária
+  bankId          String?   // Referência ao banco (se for transação bancária)
+  ofxImportId     String?   // Referência à importação OFX (se for transação importada)
+  
+  // Campos de recorrência (apenas para transações financeiras)
+  isRecurring Boolean @default(false)
+  originalTransactionId String? // Referência para a transação original que foi duplicada
+  recurrenceFrequency RecurrenceFrequency?
+  recurrenceInterval Int? // Número de parcelas
+  recurrenceEndDate DateTime? // Data de fim da recorrência
+  
+  // Chaves estrangeiras
+  categoryId      String?
+  paymentMethodId String?
+  userId          String
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relacionamentos
+  category      FinancialCategory? @relation(fields: [categoryId], references: [id])
+  paymentMethod PaymentMethod?    @relation(fields: [paymentMethodId], references: [id])
+  user          User              @relation(fields: [userId], references: [id])
+  bank          Bank?             @relation(fields: [bankId], references: [id], onDelete: Cascade)
+  ofxImport     OfxImport?        @relation(fields: [ofxImportId], references: [id], onDelete: Cascade)
+  
+  // Auto-relacionamento para transações recorrentes
+  originalTransaction FinancialTransaction? @relation("RecurringTransactions", fields: [originalTransactionId], references: [id])
+  recurringTransactions FinancialTransaction[] @relation("RecurringTransactions")
+
+  @@map("financial_transactions")
+  
+  // Índices para otimizar consultas frequentes
+  @@index([userId])
+  @@index([userId, dueDate])
+  @@index([userId, status])
+  @@index([userId, type])
+  @@index([originalTransactionId])
+  @@index([categoryId])
+  @@index([paymentMethodId])
+  @@index([dueDate])
+  @@index([isRecurring])
+  @@index([bankId])
+  @@index([transactionDate])
+  @@index([ofxImportId])
+}
+
+// === MÓDULO DE BANCOS ===
+
+// Importações de arquivos OFX
+model OfxImport {
+  id          String @id @default(cuid())
+  fileName    String
+  importDate  DateTime @default(now())
+  bankId      String
+  status      OfxImportStatus @default(PROCESSING)
+  totalTransactions Int @default(0)
+  processedTransactions Int @default(0)
+  errorMessage String?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relacionamentos
+  bank          Bank                @relation(fields: [bankId], references: [id], onDelete: Cascade)
+  transactions  FinancialTransaction[]
+  pendingTransactions OfxPendingTransaction[]
+
+  @@map("ofx_imports")
+  
+  // Índices
+  @@index([bankId])
+  @@index([importDate])
+  @@index([status])
+}
+
+// Transações OFX pendentes de aprovação
+model OfxPendingTransaction {
+  id               String   @id @default(cuid())
+  ofxImportId      String
+  
+  // Dados originais da transação OFX
+  title            String
+  description      String?
+  amount           Int      // Valor em centavos
+  type             FinancialTransactionType
+  transactionDate  DateTime
+  
+  // Dados OFX específicos
+  fitid            String?  // ID único da transação no OFX
+  trntype          String?  // Tipo da transação OFX
+  checknum         String?  // Número do cheque
+  memo             String?  // Memo do OFX
+  name             String?  // Nome do OFX
+  
+  // Categorização sugerida pela AI
+  suggestedCategoryId   String?
+  suggestedCategoryName String?
+  confidence           Int?     // 0-100
+  
+  // Categorização manual (pode sobrescrever a sugerida)
+  finalCategoryId      String?
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relacionamentos
+  ofxImport        OfxImport          @relation(fields: [ofxImportId], references: [id], onDelete: Cascade)
+  suggestedCategory FinancialCategory? @relation("SuggestedCategory", fields: [suggestedCategoryId], references: [id])
+  finalCategory     FinancialCategory? @relation("FinalCategory", fields: [finalCategoryId], references: [id])
+
+  @@map("ofx_pending_transactions")
+  
+  // Índices
+  @@index([ofxImportId])
+  @@index([transactionDate])
+  @@index([suggestedCategoryId])
+  @@index([finalCategoryId])
+}
+
+// Bancos
+model Bank {
+  id          String @id @default(cuid())
+  name        String
+  accountNumber String
+  accountType  BankAccountType
+  balance     Int // Saldo em centavos
+  isActive    Boolean @default(true)
+  
+  // Campos de identificação
+  documentType BankDocumentType
+  document     String // CPF ou CNPJ
+  holderName   String // Nome ou Razão Social
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relacionamentos
+  transactions    FinancialTransaction[]
+  ofxImports     OfxImport[]
+
+  @@map("banks")
+  
+  // Índices
+  @@index([isActive])
+  @@index([document])
+  @@index([holderName])
+}
+
+// === PAGAMENTOS RECORRENTES (INDEPENDENTES) ===
+model RecurringPayment {
+  id             String   @id @default(cuid())
+  title          String
+  recurrenceType RecurrenceType
+  // Para recorrência semanal
+  weekday        Int?    // 0=Domingo, 1=Segunda, ..., 6=Sábado
+  // Para recorrência mensal
+  day            Int?    // 1-31
+  // Para recorrência anual
+  month          Int?    // 1-12
+  paymentMethodId String?
+  unidadeId      String? // Relação opcional com unidade
+  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+  unidade         Unidade? @relation(fields: [unidadeId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("recurring_payments")
+}
+
+// === UNIDADES ===
+
+model Unidade {
+  id    String @id @default(cuid())
+  nome  String
+  local String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relacionamentos
+  recurringPayments RecurringPayment[]
+
+  @@map("unidades")
+}
+
+// Enums
+enum FinancialTransactionType {
+  RECEIVABLE // Contas a receber
+  PAYABLE    // Contas a pagar
+  CREDIT     // Crédito bancário (entrada)
+  DEBIT      // Débito bancário (saída)
+}
+
+enum FinancialTransactionStatus {
+  PENDING   // Pendente
+  PAID      // Pago
+  OVERDUE   // Vencido
+  CONFIRMED // Confirmado (para transações bancárias)
+  CANCELLED // Cancelado (para transações bancárias)
+}
+
+enum RecurrenceFrequency {
+  DAILY     // Diário
+  WEEKLY    // Semanal
+  FORTNIGHTLY // Quinzenal
+  MONTHLY   // Mensal
+  BIMONTHLY // Bimestral
+  QUARTERLY // Trimestral
+  SEMIANNUAL // Semestral
+  ANNUAL    // Anual
+  UNTIL_END_OF_YEAR // Até o final do ano
+}
+
+enum BankAccountType {
+  CHECKING   // Conta Corrente
+  SAVINGS    // Conta Poupança
+  INVESTMENT // Conta de Investimento
+  CREDIT     // Cartão de Crédito
+}
+
+enum BankDocumentType {
+  CPF  // Pessoa Física
+  CNPJ // Pessoa Jurídica
+}
+
+enum OfxImportStatus {
+  PENDING        // Pendente
+  PROCESSING     // Processando
+  PENDING_REVIEW // Aguardando revisão das categorizações
+  COMPLETED      // Concluído
+  FAILED         // Falhou
+  CANCELLED      // Cancelado
+}
+
+enum RecurrenceType {
+  DAILY
+  WEEKLY
+  MONTHLY
+  ANNUAL
+}
