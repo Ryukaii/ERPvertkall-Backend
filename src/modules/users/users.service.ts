@@ -449,4 +449,76 @@ export class UsersService {
       },
     };
   }
+
+  async getAllAvailablePermissions() {
+    // Buscar todos os módulos ativos
+    const modules = await this.prisma.module.findMany({
+      where: { isActive: true },
+      orderBy: { displayName: 'asc' },
+    });
+
+    // Buscar todas as permissões únicas do sistema
+    const allPermissions = await this.prisma.userPermission.findMany({
+      select: {
+        moduleId: true,
+        resource: true,
+        action: true,
+        module: {
+          select: {
+            id: true,
+            name: true,
+            displayName: true,
+            description: true,
+          },
+        },
+      },
+      distinct: ['moduleId', 'resource', 'action'],
+      orderBy: [
+        { module: { displayName: 'asc' } },
+        { resource: 'asc' },
+        { action: 'asc' },
+      ],
+    });
+
+    // Agrupar permissões por módulo
+    const permissionsByModule = new Map();
+
+    // Inicializar todos os módulos ativos
+    modules.forEach(module => {
+      permissionsByModule.set(module.id, {
+        module: {
+          id: module.id,
+          name: module.name,
+          displayName: module.displayName,
+          description: module.description,
+        },
+        resources: new Map(),
+      });
+    });
+
+    // Processar permissões encontradas
+    allPermissions.forEach(permission => {
+      const moduleData = permissionsByModule.get(permission.moduleId);
+      if (moduleData) {
+        const resourceMap = moduleData.resources;
+        
+        if (!resourceMap.has(permission.resource)) {
+          resourceMap.set(permission.resource, {
+            resource: permission.resource,
+            actions: [],
+          });
+        }
+        
+        resourceMap.get(permission.resource).actions.push(permission.action);
+      }
+    });
+
+    // Converter para formato final
+    const result = Array.from(permissionsByModule.values()).map(moduleData => ({
+      module: moduleData.module,
+      resources: Array.from(moduleData.resources.values()),
+    }));
+
+    return result;
+  }
 } 

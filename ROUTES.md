@@ -153,6 +153,53 @@ Lista recursos e ações disponíveis em um módulo (apenas admin)
 }
 ```
 
+### GET /users/permissions/available
+Lista todas as permissões disponíveis no sistema (apenas admin)
+```json
+[
+  {
+    "module": {
+      "id": "module-id-1",
+      "name": "financeiro",
+      "displayName": "Módulo Financeiro",
+      "description": "Gestão de contas a pagar e receber"
+    },
+    "resources": [
+      {
+        "resource": "categories",
+        "actions": ["read", "write"]
+      },
+      {
+        "resource": "transactions",
+        "actions": ["read", "write"]
+      },
+      {
+        "resource": "payment_methods",
+        "actions": ["read", "write"]
+      }
+    ]
+  },
+  {
+    "module": {
+      "id": "module-id-2",
+      "name": "bancos",
+      "displayName": "Módulo Bancário",
+      "description": "Gestão de contas bancárias e transações"
+    },
+    "resources": [
+      {
+        "resource": "banks",
+        "actions": ["read", "write"]
+      },
+      {
+        "resource": "bank_transactions",
+        "actions": ["read", "write"]
+      }
+    ]
+  }
+]
+```
+
 ## Módulo Financeiro
 
 ### Categorias

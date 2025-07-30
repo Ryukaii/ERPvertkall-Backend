@@ -98,6 +98,12 @@ export class UsersController {
     return this.usersService.getModuleResources(moduleId);
   }
 
+  @Get('permissions/available')
+  @UseGuards(AdminGuard)
+  async getAllAvailablePermissions() {
+    return this.usersService.getAllAvailablePermissions();
+  }
+
   @Delete(':id/permissions/:moduleId/:resource/:action')
   @UseGuards(AdminGuard)
   async removeUserPermission(
