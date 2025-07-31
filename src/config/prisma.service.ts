@@ -7,14 +7,20 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private isConnected = false;
 
   constructor() {
+    const isProduction = process.env.NODE_ENV === 'production';
+    const databaseUrl = isProduction 
+      ? PrismaService.buildProductionUrl(process.env.DATABASE_URL)
+      : process.env.DATABASE_URL || 'postgresql://erp_user:erp_password@localhost:5432/erp_vertkall?schema=public';
+
     super({
       datasources: {
         db: {
-          url: process.env.DATABASE_URL || 'postgresql://erp_user:erp_password@localhost:5432/erp_vertkall?schema=public',
+          url: databaseUrl,
         },
       },
-      // Connection pool configuration for better performance
+      // Configuration optimized for Supabase/Heroku production
       log: ['error', 'warn'],
+      errorFormat: 'pretty',
     });
 
     // Add middleware for connection monitoring with performance tracking
@@ -99,5 +105,47 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   // Override findUnique to include retry logic
   async findUniqueWithRetry(model: any, args: any) {
     return this.executeWithRetry(() => model.findUnique(args));
+  }
+
+  // Build production URL with Supabase-specific configurations
+  private static buildProductionUrl(baseUrl?: string): string {
+    if (!baseUrl) return 'postgresql://erp_user:erp_password@localhost:5432/erp_vertkall?schema=public';
+    
+    // Parse the URL to add Supabase-specific parameters
+    const url = new URL(baseUrl);
+    
+    // Add Supabase-specific query parameters for better stability
+    url.searchParams.set('pgbouncer', 'true');
+    url.searchParams.set('connection_limit', '5');
+    url.searchParams.set('pool_timeout', '30');
+    url.searchParams.set('statement_cache_size', '0'); // Disable prepared statements
+    url.searchParams.set('prepared_statements', 'false');
+    
+    return url.toString();
+  }
+
+  // Connection health check
+  async isHealthy(): Promise<boolean> {
+    try {
+      await this.$queryRaw`SELECT 1`;
+      return true;
+    } catch (error) {
+      this.logger.error('Database health check failed:', error);
+      return false;
+    }
+  }
+
+  // Graceful reconnection method
+  async reconnect(): Promise<void> {
+    try {
+      this.logger.log('Attempting database reconnection...');
+      await this.$disconnect();
+      await this.$connect();
+      this.isConnected = true;
+      this.logger.log('✅ Database reconnected successfully');
+    } catch (error) {
+      this.logger.error('❌ Failed to reconnect to database:', error);
+      throw error;
+    }
   }
 } 

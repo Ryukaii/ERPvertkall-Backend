@@ -3,6 +3,9 @@
 
 generator client {
   provider = "prisma-client-js"
+  // Optimizations for production
+  engineType = "library"
+  binaryTargets = ["native", "linux-musl"]
 }
 
 datasource db {

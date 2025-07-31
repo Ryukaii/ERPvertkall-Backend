@@ -23,7 +23,9 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:admin": "tsx prisma/admin-seed.ts",
     "db:reset": "prisma migrate reset --force && npm run db:seed",
-    "postinstall": "npm run db:generate && npm run build"
+    "postinstall": "npm run db:generate && npm run build",
+    "deploy:heroku": "git push heroku main",
+    "logs:heroku": "heroku logs --tail"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
