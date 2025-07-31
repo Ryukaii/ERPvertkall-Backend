@@ -120,6 +120,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     url.searchParams.set('pool_timeout', '30');
     url.searchParams.set('statement_cache_size', '0'); // Disable prepared statements
     url.searchParams.set('prepared_statements', 'false');
+    url.searchParams.set('schema', 'public');
     
     return url.toString();
   }
