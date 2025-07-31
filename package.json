@@ -25,7 +25,10 @@
     "db:reset": "prisma migrate reset --force && npm run db:seed",
     "postinstall": "npm run db:generate && npm run build",
     "deploy:heroku": "git push heroku main",
-    "logs:heroku": "heroku logs --tail"
+    "logs:heroku": "heroku logs --tail",
+    "migrate:prod": "heroku run npm run db:migrate",
+    "migrate:status": "heroku run npx prisma migrate status",
+    "db:reset:prod": "heroku run npm run db:reset"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
