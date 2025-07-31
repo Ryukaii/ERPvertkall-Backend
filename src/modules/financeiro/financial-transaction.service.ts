@@ -108,7 +108,9 @@ export class FinancialTransactionService {
       status, 
       categoryId, 
       paymentMethodId, 
-      search 
+      search,
+      page = 1,
+      limit = 50
     } = filterDto;
 
     const where: any = {};
@@ -139,17 +141,59 @@ export class FinancialTransactionService {
       ];
     }
 
-    const transactions = await this.prisma.financialTransaction.findMany({
-      where,
-      include: {
-        category: true,
-        paymentMethod: true,
-        user: {
-          select: { id: true, name: true, email: true },
+    // Calcular offset para paginação
+    const offset = (page - 1) * limit;
+
+    // Usar método otimizado do PrismaService
+    const transactions = await this.prisma.findManyOptimized(
+      this.prisma.financialTransaction,
+      {
+        where,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          amount: true,
+          dueDate: true,
+          paidDate: true,
+          type: true,
+          status: true,
+          isRecurring: true,
+          recurrenceFrequency: true,
+          recurrenceInterval: true,
+          recurrenceEndDate: true,
+          originalTransactionId: true,
+          createdAt: true,
+          updatedAt: true,
+          category: {
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              icon: true,
+            },
+          },
+          paymentMethod: {
+            select: {
+              id: true,
+              name: true,
+              type: true,
+            },
+          },
+          user: {
+            select: { 
+              id: true, 
+              name: true, 
+              email: true 
+            },
+          },
         },
+        orderBy: { dueDate: 'desc' },
+        skip: offset,
+        take: limit,
       },
-      orderBy: { dueDate: 'desc' },
-    });
+      { useRetry: true, maxRetries: 2 }
+    );
 
     // Converter datas para ISO strings usando uma abordagem mais robusta
     return transactions.map(transaction => {

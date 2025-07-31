@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../config/prisma.service';
 import { FinancialTransactionType } from '@prisma/client';
+import { RegexOptimizationService } from './services/regex-optimization.service';
 
 export interface PaymentMethodSuggestion {
   paymentMethodId: string;
@@ -15,6 +16,7 @@ export class PaymentMethodSuggestionService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly regexOptimization: RegexOptimizationService,
   ) {}
 
   async suggestPaymentMethodForTransaction(
@@ -38,15 +40,15 @@ export class PaymentMethodSuggestionService {
         return null;
       }
 
-      // ===== REGRAS REGEX PARA SUGESTÃO DE MÉTODO DE PAGAMENTO =====
-      const regexMatch = this.matchRegexRules(transactionTitle, transactionDescription, availablePaymentMethods);
+      // ===== REGRAS REGEX OTIMIZADAS PARA SUGESTÃO DE MÉTODO DE PAGAMENTO =====
+      const regexMatch = this.matchOptimizedRegexRules(transactionTitle, transactionDescription, availablePaymentMethods);
       if (regexMatch) {
-        console.log(`🎯 Sugestão de método de pagamento por regex aplicada: "${transactionTitle}" -> ${regexMatch.paymentMethodName} (${regexMatch.confidence}%)`);
-        console.log(`📝 Motivo: ${regexMatch.reasoning}`);
+        this.logger.log(`🎯 Sugestão otimizada de método de pagamento aplicada: "${transactionTitle}" -> ${regexMatch.paymentMethodName} (${regexMatch.confidence}%)`);
+        this.logger.log(`📝 Motivo: ${regexMatch.reasoning}`);
         return regexMatch;
       }
 
-      console.log(`❌ Nenhuma regra regex aplicável encontrada para método de pagamento: "${transactionTitle}"`);
+      this.logger.log(`❌ Nenhuma regra regex otimizada encontrada para método de pagamento: "${transactionTitle}"`);
       return null;
 
     } catch (error) {
@@ -56,114 +58,39 @@ export class PaymentMethodSuggestionService {
   }
 
   /**
-   * Aplica regras regex para sugestão de método de pagamento
+   * Aplica regras regex otimizadas para sugestão de método de pagamento
    */
-  private matchRegexRules(
+  private matchOptimizedRegexRules(
     transactionTitle: string,
     transactionDescription: string,
     availablePaymentMethods: Array<{ id: string; name: string }>,
   ): PaymentMethodSuggestion | null {
-    // Combinar título e descrição para busca
-    const searchText = `${transactionTitle} ${transactionDescription}`.toUpperCase();
+    // Usar o serviço otimizado para buscar match (apenas na descrição)
+    const match = this.regexOptimization.findPaymentMethodMatch('', transactionDescription);
     
-    console.log(`🔍 Analisando regex para método de pagamento: "${searchText}"`);
-    
-    // Regras regex para métodos de pagamento específicos
-    const regexRules = [
-      {
-        pattern: /\b(PIX|PIX\s+RECEBIMENTO|PIX\s+PAGAMENTO|PIX\s+TRANSFERENCIA|PIX\s+ENVIADO|PIX\s+RECEBIDO)\b/i,
-        paymentMethodName: 'PIX',
-        confidence: 100,
-        reasoning: 'Identificado como transação PIX por regex',
-      },
-      {
-        pattern: /\b(BOLETO|BOLETO\s+BANCARIO|BOLETO\s+PAGO|BOLETO\s+RECEBIDO|BOLETO\s+EMITIDO)\b/i,
-        paymentMethodName: 'Boleto Bancário',
-        confidence: 100,
-        reasoning: 'Identificado como boleto bancário por regex',
-      },
-      {
-        pattern: /\b(CARTAO\s+CREDITO|CARTAO\s+DE\s+CREDITO|CREDITO|COMPRA\s+CREDITO|PAGAMENTO\s+CREDITO)\b/i,
-        paymentMethodName: 'Cartão de Crédito',
-        confidence: 100,
-        reasoning: 'Identificado como cartão de crédito por regex',
-      },
-      {
-        pattern: /\b(CARTAO\s+DEBITO|CARTAO\s+DE\s+DEBITO|DEBITO|COMPRA\s+DEBITO|PAGAMENTO\s+DEBITO)\b/i,
-        paymentMethodName: 'Cartão de Débito',
-        confidence: 100,
-        reasoning: 'Identificado como cartão de débito por regex',
-      },
-      {
-        pattern: /\b(CHEQUE|CHEQUE\s+NUMERO|CHEQUE\s+COMPENSADO|CHEQUE\s+EMITIDO)\b/i,
-        paymentMethodName: 'Cheque',
-        confidence: 100,
-        reasoning: 'Identificado como cheque por regex',
-      },
-      {
-        pattern: /\b(DEBITO\s+AUTOMATICO|DEBITO\s+EM\s+CONTA|DEBITO\s+DIRETO|AUTOMATICO)\b/i,
-        paymentMethodName: 'Débito Automático',
-        confidence: 100,
-        reasoning: 'Identificado como débito automático por regex',
-      },
-      {
-        pattern: /\b(DINHEIRO|CASH|EFETIVO|ESPECIE)\b/i,
-        paymentMethodName: 'Dinheiro',
-        confidence: 100,
-        reasoning: 'Identificado como dinheiro por regex',
-      },
-      {
-        pattern: /\b(TRANSFERENCIA|TRANSFERENCIA\s+BANCARIA|TRANSFERENCIA\s+ENTRE\s+CONTAS|TED|DOC)\b/i,
-        paymentMethodName: 'Transferência Bancária',
-        confidence: 100,
-        reasoning: 'Identificado como transferência bancária por regex',
-      },
-      {
-        pattern: /\b(SAQUE|ATM|SAQUE\s+ATM|SAQUE\s+TERMINAL)\b/i,
-        paymentMethodName: 'Dinheiro',
-        confidence: 90,
-        reasoning: 'Identificado como saque ATM (dinheiro) por regex',
-      },
-      {
-        pattern: /\b(POS|COMPRA\s+POS|PAGAMENTO\s+POS|TERMINAL\s+POS)\b/i,
-        paymentMethodName: 'Cartão de Débito',
-        confidence: 85,
-        reasoning: 'Identificado como compra POS (provavelmente débito) por regex',
-      },
-      {
-        pattern: /\b(DEPOSITO|DEPOSITO\s+BANCARIO|DEPOSITO\s+EM\s+CONTA)\b/i,
-        paymentMethodName: 'Transferência Bancária',
-        confidence: 80,
-        reasoning: 'Identificado como depósito bancário por regex',
-      },
-    ];
-
-    // Aplicar regras regex
-    for (const rule of regexRules) {
-      if (rule.pattern.test(searchText)) {
-        console.log(`✅ Regex match encontrado para método de pagamento: "${rule.pattern}" -> ${rule.paymentMethodName}`);
-        
-        // Encontrar o método de pagamento correspondente
-        const paymentMethod = availablePaymentMethods.find(pm => 
-          pm.name.toUpperCase() === rule.paymentMethodName.toUpperCase()
-        );
-
-        if (paymentMethod) {
-          console.log(`🎯 Método de pagamento encontrado: ${paymentMethod.name} (ID: ${paymentMethod.id})`);
-          return {
-            paymentMethodId: paymentMethod.id,
-            paymentMethodName: paymentMethod.name,
-            confidence: rule.confidence,
-            reasoning: rule.reasoning,
-          };
-        } else {
-          console.log(`⚠️ Método de pagamento "${rule.paymentMethodName}" não encontrado nos métodos disponíveis`);
-        }
-      }
+    if (!match) {
+      return null;
     }
 
-    console.log(`❌ Nenhuma regra regex aplicável encontrada para método de pagamento`);
-    return null;
+    this.logger.log(`🔍 Regex otimizado encontrou match para pagamento: ${match.paymentMethodName} (${match.confidence}%)`);
+    
+    // Encontrar o método de pagamento correspondente
+    const paymentMethod = availablePaymentMethods.find(pm => 
+      pm.name.toUpperCase() === match.paymentMethodName.toUpperCase()
+    );
+
+    if (paymentMethod) {
+      this.logger.log(`🎯 Método de pagamento encontrado: ${paymentMethod.name} (ID: ${paymentMethod.id})`);
+      return {
+        paymentMethodId: paymentMethod.id,
+        paymentMethodName: paymentMethod.name,
+        confidence: match.confidence,
+        reasoning: match.reasoning,
+      };
+    } else {
+      this.logger.warn(`⚠️ Método de pagamento "${match.paymentMethodName}" não encontrado nos métodos disponíveis`);
+      return null;
+    }
   }
 
   // Método específico para transações OFX pendentes

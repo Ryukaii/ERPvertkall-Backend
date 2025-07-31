@@ -1,17 +1,22 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../config/prisma.service';
 import { ImportOfxDto } from './dto/import-ofx.dto';
 import { OfxImport, OfxImportStatus, FinancialTransactionType, FinancialTransactionStatus } from '@prisma/client';
-import * as ofx from 'ofx';
 import { AiCategorizationService } from './ai-categorization.service';
 import { PaymentMethodSuggestionService } from './payment-method-suggestion.service';
+import { OfxClusterManager } from './workers/ofx-cluster-manager';
+import { OfxBulkProcessorService } from './services/ofx-bulk-processor.service';
 
 @Injectable()
 export class OfxImportService {
+  private readonly logger = new Logger(OfxImportService.name);
+
   constructor(
     private prisma: PrismaService,
     private aiCategorizationService: AiCategorizationService,
     private paymentMethodSuggestionService: PaymentMethodSuggestionService,
+    private clusterManager: OfxClusterManager,
+    private bulkProcessor: OfxBulkProcessorService,
   ) {}
 
   async createImport(importOfxDto: ImportOfxDto): Promise<OfxImport> {
@@ -41,148 +46,196 @@ export class OfxImportService {
     importId: string,
     userId: string,
   ): Promise<void> {
-    // Executar processamento em background
+    // Executar processamento otimizado em background
     setImmediate(async () => {
+      const startTime = Date.now();
       try {
-        console.log(`🚀 === INICIANDO WORKER PARA IMPORT ${importId} ===`);
+        this.logger.log(`🚀 === INICIANDO PROCESSAMENTO OTIMIZADO PARA IMPORT ${importId} ===`);
         
         // Atualizar status para PROCESSING
-        await this.prisma.ofxImport.update({
-          where: { id: importId },
-          data: { status: 'PROCESSING' },
-        });
+        await this.bulkProcessor.updateImportProgress(importId, 0, 0, 'PROCESSING');
 
-        // Detectar encoding e processar o arquivo OFX
-        const ofxContent = this.detectAndDecodeFile(fileBuffer);
-        const result = await this.processOfxFile(ofxContent, importId, userId);
+        // Parse otimizado via streams
+        const ofxData = await this.bulkProcessor.parseOfxStream(fileBuffer);
+        const totalTransactions = ofxData.transactions.length;
+        
+        this.logger.log(`📊 Total de ${totalTransactions} transações encontradas`);
+        
+        // Atualizar total de transações
+        await this.bulkProcessor.updateImportProgress(importId, totalTransactions, 0);
 
-        console.log(`✅ === WORKER FINALIZADO PARA IMPORT ${importId} ===`);
-        console.log(`📊 Status final: ${result.status}`);
-        console.log(`📊 Total de transações: ${result.totalTransactions}`);
-        console.log(`📊 Processadas: ${result.processedTransactions}`);
+        // Processamento paralelo via cluster
+        const workerResults = await this.clusterManager.processTransactionsInParallel(
+          ofxData.transactions,
+          importId,
+          userId
+        );
+
+        // Consolidar resultados de todos os workers
+        const allProcessedTransactions = workerResults.flatMap(result => 
+          result.categorizedTransactions
+        );
+        
+        const totalProcessed = allProcessedTransactions.length;
+        const totalErrors = workerResults.reduce((sum, result) => sum + result.errors.length, 0);
+        
+        this.logger.log(`📊 Processamento paralelo completo: ${totalProcessed}/${totalTransactions} transações`);
+        
+        if (allProcessedTransactions.length > 0) {
+          // Bulk insert otimizado com regex já aplicado
+          this.logger.log(`💾 Iniciando bulk insert de ${allProcessedTransactions.length} transações`);
+          
+          // Contar quantas foram categorizadas via regex
+          const categorizedByRegex = allProcessedTransactions.filter(tx => tx.suggestedCategory).length;
+          this.logger.log(`🎯 ${categorizedByRegex}/${allProcessedTransactions.length} transações categorizadas via regex`);
+          
+          const bulkData = allProcessedTransactions.map(tx => ({
+            ofxImportId: importId,
+            title: tx.title,
+            description: tx.description,
+            amount: tx.amount,
+            type: tx.type,
+            transactionDate: tx.transactionDate,
+            fitid: tx.fitid,
+            trntype: tx.trntype,
+            checknum: tx.checknum,
+            memo: tx.memo,
+            name: tx.name,
+            ...(tx.suggestedCategory && {
+              suggestedCategoryId: tx.suggestedCategory,
+              confidence: tx.categoryConfidence || 80
+            }),
+            ...(tx.suggestedPaymentMethod && {
+              suggestedPaymentMethodId: tx.suggestedPaymentMethod,
+              paymentMethodConfidence: tx.paymentMethodConfidence || 80
+            })
+          }));
+          
+          // Converter nomes para IDs antes do bulk insert
+          const processedBulkData = await this.bulkProcessor.convertCategoryNamesToIds(bulkData);
+          const finalBulkData = await this.bulkProcessor.convertPaymentMethodNamesToIds(processedBulkData);
+          
+          await this.bulkProcessor.bulkInsertPendingTransactions(finalBulkData);
+          
+          // Log detalhado das categorizações e métodos de pagamento
+          const categorizedTransactions = allProcessedTransactions.filter(tx => tx.suggestedCategory);
+          const paymentMethodTransactions = allProcessedTransactions.filter(tx => tx.suggestedPaymentMethod);
+          
+          if (categorizedTransactions.length > 0) {
+            this.logger.log(`🎯 === CATEGORIZATIONS VIA REGEX ===`);
+            categorizedTransactions.forEach(tx => {
+              this.logger.log(`📝 "${tx.description}" -> ${tx.suggestedCategory} (${tx.categoryConfidence}%)`);
+            });
+          }
+          
+          if (paymentMethodTransactions.length > 0) {
+            this.logger.log(`💳 === PAYMENT METHODS VIA REGEX ===`);
+            paymentMethodTransactions.forEach(tx => {
+              this.logger.log(`💳 "${tx.description}" -> ${tx.suggestedPaymentMethod} (${tx.paymentMethodConfidence}%)`);
+            });
+          }
+          
+          // Console de debug final
+          this.logger.log(`📊 === RESUMO DO PROCESSAMENTO ===`);
+          this.logger.log(`📊 Total de transações: ${totalProcessed}`);
+          this.logger.log(`🎯 Categorias encontradas via regex: ${categorizedTransactions.length}`);
+          this.logger.log(`💳 Métodos de pagamento encontrados via regex: ${paymentMethodTransactions.length}`);
+          this.logger.log(`📊 Taxa de categorização: ${Math.round((categorizedTransactions.length / totalProcessed) * 100)}%`);
+          this.logger.log(`📊 Taxa de métodos de pagamento: ${Math.round((paymentMethodTransactions.length / totalProcessed) * 100)}%`);
+        }
+
+        // Status final
+        const finalStatus = totalErrors === 0 ? 'PENDING_REVIEW' : 'FAILED';
+        const errorMessage = totalErrors > 0 ? `${totalErrors} erros durante o processamento` : null;
+        
+        await this.bulkProcessor.updateImportProgress(
+          importId, 
+          totalTransactions, 
+          totalProcessed, 
+          finalStatus,
+          errorMessage || undefined
+        );
+
+        const duration = Date.now() - startTime;
+        this.logger.log(`✅ === PROCESSAMENTO OTIMIZADO FINALIZADO ===`);
+        this.logger.log(`📊 Import: ${importId}`);
+        this.logger.log(`📊 Status: ${finalStatus}`);
+        this.logger.log(`📊 Transações: ${totalProcessed}/${totalTransactions}`);
+        this.logger.log(`📊 Erros: ${totalErrors}`);
+        this.logger.log(`📊 Duração: ${duration}ms`);
+        this.logger.log(`📊 Throughput: ${Math.round(totalTransactions * 1000 / duration)} transações/segundo`);
 
       } catch (error) {
-        console.error(`❌ === ERRO NO WORKER PARA IMPORT ${importId} ===`);
-        console.error(error);
+        this.logger.error(`❌ === ERRO NO PROCESSAMENTO OTIMIZADO ===`);
+        this.logger.error(`Import: ${importId}`);
+        this.logger.error(error);
         
         // Atualizar status para FAILED
-        await this.prisma.ofxImport.update({
-          where: { id: importId },
-          data: {
-            status: 'FAILED',
-            errorMessage: error.message,
-          },
-        });
+        await this.bulkProcessor.updateImportProgress(
+          importId, 
+          0, 
+          0, 
+          'FAILED',
+          error.message
+        );
       }
     });
   }
 
+  // Método mantido para compatibilidade com métodos existentes
   private detectAndDecodeFile(buffer: Buffer): string {
-    // Tentar diferentes encodings comuns para arquivos OFX
     const encodings: BufferEncoding[] = ['utf-8', 'latin1', 'ascii'];
     
     for (const encoding of encodings) {
       try {
         const content = buffer.toString(encoding);
-        
-        // Verificar se o conteúdo parece válido (não tem caracteres de substituição)
         if (!content.includes('\uFFFD') && content.includes('<OFX>')) {
-          console.log(`Arquivo decodificado com sucesso usando encoding: ${encoding}`);
+          this.logger.log(`Arquivo decodificado usando encoding: ${encoding}`);
           return content;
         }
-      } catch (error) {
-        // Continuar para próximo encoding
+      } catch {
         continue;
       }
     }
     
-    // Se nenhum encoding funcionou perfeitamente, usar latin1 como fallback
-    // pois é o mais comum para arquivos bancários brasileiros
-    console.log('Usando latin1 como fallback para decodificação');
+    this.logger.log('Usando latin1 como fallback para decodificação');
     return buffer.toString('latin1');
   }
 
+  // Método legado mantido para compatibilidade (não usado no novo fluxo otimizado)
   async processOfxFile(ofxContent: string, importId: string, userId: string): Promise<OfxImport> {
+    this.logger.warn(`⚠️ Usando método legado processOfxFile para ${importId}`);
+    
     try {
-      console.log(`📊 === INICIANDO PROCESSAMENTO OFX ${importId} ===`);
-
-      // Parse do arquivo OFX
-      const ofxData = ofx.parse(ofxContent);
+      const buffer = Buffer.from(ofxContent, 'utf8');
+      const ofxData = await this.bulkProcessor.parseOfxStream(buffer);
       
-      if (!ofxData.OFX || !ofxData.OFX.BANKMSGSRSV1 || !ofxData.OFX.BANKMSGSRSV1.STMTTRNRS) {
-        throw new BadRequestException('Formato OFX inválido');
-      }
+      // Redirecionar para o processamento otimizado
+      const workerResults = await this.clusterManager.processTransactionsInParallel(
+        ofxData.transactions,
+        importId,
+        userId
+      );
 
-      const stmttrnrs = ofxData.OFX.BANKMSGSRSV1.STMTTRNRS;
-      const banktranlist = stmttrnrs.STMTRS.BANKTRANLIST;
+      const totalProcessed = workerResults.reduce((sum, result) => sum + result.processedCount, 0);
+      const totalErrors = workerResults.reduce((sum, result) => sum + result.errors.length, 0);
       
-      if (!banktranlist || !banktranlist.STMTTRN) {
-        throw new BadRequestException('Nenhuma transação encontrada no arquivo OFX');
-      }
-
-      const transactions = Array.isArray(banktranlist.STMTTRN) 
-        ? banktranlist.STMTTRN 
-        : [banktranlist.STMTTRN];
-
-      console.log(`📊 Total de transações encontradas: ${transactions.length}`);
-
-      let processedCount = 0;
-      const errors: string[] = [];
-
-      // Atualizar total de transações
-      await this.prisma.ofxImport.update({
-        where: { id: importId },
-        data: { totalTransactions: transactions.length },
-      });
-
-      // Processar cada transação
-      for (let i = 0; i < transactions.length; i++) {
-        const ofxTransaction = transactions[i];
-        
-        try {
-          console.log(`🔄 Processando transação ${i + 1}/${transactions.length}`);
-          await this.processTransaction(ofxTransaction, importId, userId);
-          processedCount++;
-          
-          // Atualizar progresso a cada 10 transações
-          if (processedCount % 10 === 0 || processedCount === transactions.length) {
-            await this.prisma.ofxImport.update({
-              where: { id: importId },
-              data: { processedTransactions: processedCount },
-            });
-            console.log(`📈 Progresso: ${processedCount}/${transactions.length} (${Math.round((processedCount/transactions.length)*100)}%)`);
-          }
-        } catch (error) {
-          console.error(`❌ Erro ao processar transação ${i + 1}:`, error.message);
-          errors.push(`Erro ao processar transação ${i + 1}: ${error.message}`);
-        }
-      }
-
-      // Atualizar importação com resultado final
-      // Agora sempre fica PENDING_REVIEW para análise das categorizações
-      const status = errors.length === 0 ? 'PENDING_REVIEW' : 'FAILED';
-      const errorMessage = errors.length > 0 ? errors.join('; ') : null;
-
-      console.log(`✅ === FINALIZANDO PROCESSAMENTO OFX ${importId} ===`);
-      console.log(`📊 Status: ${status}`);
-      console.log(`📊 Processadas: ${processedCount}/${transactions.length}`);
-      console.log(`📊 Erros: ${errors.length}`);
+      const status = totalErrors === 0 ? 'PENDING_REVIEW' : 'FAILED';
+      const errorMessage = totalErrors > 0 ? `${totalErrors} erros durante processamento` : null;
 
       return this.prisma.ofxImport.update({
         where: { id: importId },
         data: {
           status,
-          totalTransactions: transactions.length,
-          processedTransactions: processedCount,
+          totalTransactions: ofxData.transactions.length,
+          processedTransactions: totalProcessed,
           errorMessage,
         },
       });
 
     } catch (error) {
-      console.error(`❌ === ERRO NO PROCESSAMENTO OFX ${importId} ===`);
-      console.error(error);
+      this.logger.error(`❌ Erro no processamento legado:`, error);
       
-      // Atualizar status para FAILED em caso de erro
       await this.prisma.ofxImport.update({
         where: { id: importId },
         data: {
@@ -270,7 +323,16 @@ export class OfxImportService {
           .replace(/CONVÃŠNIO/g, 'CONVÊNIO')
           .replace(/EMPRÃ‰STIMO/g, 'EMPRÉSTIMO')
           .replace(/APLICAÃ‡ÃƒO/g, 'APLICAÇÃO')
-          .replace(/RESGATEAPLICAÃ‡ÃƒO/g, 'RESGATE APLICAÇÃO');
+          .replace(/RESGATEAPLICAÃ‡ÃƒO/g, 'RESGATE APLICAÇÃO')
+          // Correções específicas para o OFX fornecido
+          .replace(/DEBITO TRANSFERENCIA PIX/g, 'DÉBITO TRANSFERÊNCIA PIX')
+          .replace(/CREDITO RECEBIMENTO DE PIX/g, 'CRÉDITO RECEBIMENTO DE PIX')
+          .replace(/TRANSFERENCIA ENTRE CONTAS/g, 'TRANSFERÊNCIA ENTRE CONTAS')
+          .replace(/DEBITO FATURA- CARTAO VISA/g, 'DÉBITO FATURA - CARTÃO VISA')
+          .replace(/DEBITO TARIFA DE COBRANCA/g, 'DÉBITO TARIFA DE COBRANÇA')
+          .replace(/DEBITO CUSTAS GRAVACAO ELETRONICA/g, 'DÉBITO CUSTAS GRAVAÇÃO ELETRÔNICA')
+          .replace(/LIQUIDACAO DE PARCELA DE EMPRESTIMO/g, 'LIQUIDAÇÃO DE PARCELA DE EMPRÉSTIMO')
+          .replace(/DÉBITO TARIFA DE COBRANÇA INSTRUÇÕES/g, 'DÉBITO TARIFA DE COBRANÇA INSTRUÇÕES');
 
         // Log para debug quando houver correções
         if (fixedText !== text) {
@@ -325,36 +387,40 @@ export class OfxImportService {
       // Criar título baseado no tipo de transação
       const title = this.generateTransactionTitle(TRNTYPE, fixedMemo, CHECKNUM);
 
-      // Verificar se a transação já existe (evitar duplicatas) - lógica menos restritiva
-      const existingTransaction = await this.prisma.ofxPendingTransaction.findFirst({
-        where: {
-          ofxImportId: importId,
-          fitid: FITID, // Usar FITID como identificador único se disponível
-        },
-      });
 
-      if (existingTransaction && FITID) {
-        console.log(`🔄 Transação já existe (FITID: ${FITID}), pulando...`);
-        return;
-      }
 
-      // Se não tem FITID, verificar por outros critérios menos restritivos
-      if (!FITID) {
-        const existingByCriteria = await this.prisma.ofxPendingTransaction.findFirst({
-          where: {
-            ofxImportId: importId,
-            title,
-            amount: amountInCents,
-            transactionDate: {
-              gte: new Date(transactionDate.getTime() - 24 * 60 * 60 * 1000), // ±1 dia
-              lte: new Date(transactionDate.getTime() + 24 * 60 * 60 * 1000),
-            },
-          },
-        });
-
-        if (existingByCriteria) {
-          console.log(`🔄 Transação similar já existe, pulando...`);
-          return;
+      // Verificar se título e descrição ficariam iguais
+      let description = fixedName || fixedMemo || `Transação OFX - ${TRNTYPE}`;
+      
+      // Se o título e a descrição forem iguais, usar uma descrição mais genérica
+      if (title === description) {
+        console.log(`🔄 Título e descrição iguais detectados: "${title}"`);
+        
+        if (fixedName && fixedMemo) {
+          // Se temos tanto NAME quanto MEMO, usar o que for diferente do título
+          if (fixedName !== title) {
+            description = fixedName;
+            console.log(`   📝 Usando NAME como descrição: "${description}"`);
+          } else if (fixedMemo !== title) {
+            description = fixedMemo;
+            console.log(`   📝 Usando MEMO como descrição: "${description}"`);
+          } else {
+            // Se ambos são iguais ao título, usar uma descrição genérica
+            description = `Transação ${TRNTYPE}`;
+            console.log(`   📝 Usando descrição genérica: "${description}"`);
+          }
+        } else if (fixedName && fixedName !== title) {
+          // Se temos apenas NAME e é diferente do título
+          description = fixedName;
+          console.log(`   📝 Usando NAME como descrição: "${description}"`);
+        } else if (fixedMemo && fixedMemo !== title) {
+          // Se temos apenas MEMO e é diferente do título
+          description = fixedMemo;
+          console.log(`   📝 Usando MEMO como descrição: "${description}"`);
+        } else {
+          // Se não temos alternativas ou todas são iguais, usar uma descrição genérica
+          description = `Transação ${TRNTYPE}`;
+          console.log(`   📝 Usando descrição genérica: "${description}"`);
         }
       }
 
@@ -363,7 +429,7 @@ export class OfxImportService {
         data: {
           ofxImportId: importId,
           title,
-          description: fixedName || fixedMemo || `Transação OFX - ${TRNTYPE}`,
+          description,
           amount: amountInCents,
           type,
           transactionDate,
@@ -576,6 +642,17 @@ export class OfxImportService {
       'OTHER': 'Outro',
     };
 
+    // Para transações PIX, usar um título mais específico
+    if (cleanMemo && (cleanMemo.includes('PIX') || cleanMemo.includes('pix'))) {
+      if (cleanMemo.includes('DEBITO') || cleanMemo.includes('DÉBITO')) {
+        return 'Transferência PIX - Débito';
+      } else if (cleanMemo.includes('CREDITO') || cleanMemo.includes('CRÉDITO')) {
+        return 'Transferência PIX - Crédito';
+      } else if (cleanMemo.includes('RECEBIMENTO')) {
+        return 'Recebimento PIX';
+      }
+    }
+
     return typeMap[cleanTrntype] || `Transação ${cleanTrntype}`;
   }
 
@@ -620,8 +697,6 @@ export class OfxImportService {
           include: {
             suggestedCategory: true,
             finalCategory: true,
-            suggestedPaymentMethod: true,
-            finalPaymentMethod: true,
           },
           orderBy: {
             transactionDate: 'desc',

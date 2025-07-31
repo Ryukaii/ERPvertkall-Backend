@@ -9,9 +9,10 @@ import { PrismaService } from './config/prisma.service';
 import { ConfigService } from './config/config.service';
 import { UnidadesModule } from './modules/unidades/unidades.module';
 import { TagsModule } from './modules/tags/tags.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 @Module({
-  imports: [AuthModule, FinanceiroModule, UsersModule, BancosModule, UnidadesModule, TagsModule],
+  imports: [AuthModule, FinanceiroModule, UsersModule, BancosModule, UnidadesModule, TagsModule, DashboardModule],
   controllers: [AppController],
   providers: [AppService, PrismaService, ConfigService],
 })

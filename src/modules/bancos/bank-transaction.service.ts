@@ -75,6 +75,9 @@ export class BankTransactionService {
   }
 
   async findAll(bankId: string, filters?: FilterBankTransactionDto): Promise<FinancialTransaction[]> {
+    const { page = 1, limit = 50 } = filters || {};
+    const offset = (page - 1) * limit;
+    
     const where: any = {
       bankId,
       type: {
@@ -95,24 +98,83 @@ export class BankTransactionService {
       }
     }
 
-    return this.prisma.financialTransaction.findMany({
-      where,
-      include: {
-        bank: true,
-        category: true,
-        paymentMethod: true,
-        transferFromBank: true,
-        transferToBank: true,
-        tags: {
-          include: {
-            tag: true,
+    return this.prisma.findManyOptimized(
+      this.prisma.financialTransaction,
+      {
+        where,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          amount: true,
+          transactionDate: true,
+          type: true,
+          status: true,
+          bankId: true,
+          categoryId: true,
+          paymentMethodId: true,
+          transferFromBankId: true,
+          transferToBankId: true,
+          linkedTransactionId: true,
+          createdAt: true,
+          updatedAt: true,
+          bank: {
+            select: {
+              id: true,
+              name: true,
+              accountNumber: true,
+              accountType: true,
+            },
+          },
+          category: {
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              icon: true,
+            },
+          },
+          paymentMethod: {
+            select: {
+              id: true,
+              name: true,
+              type: true,
+            },
+          },
+          transferFromBank: {
+            select: {
+              id: true,
+              name: true,
+              accountNumber: true,
+            },
+          },
+          transferToBank: {
+            select: {
+              id: true,
+              name: true,
+              accountNumber: true,
+            },
+          },
+          tags: {
+            select: {
+              tag: {
+                select: {
+                  id: true,
+                  name: true,
+                  color: true,
+                },
+              },
+            },
           },
         },
+        orderBy: {
+          transactionDate: 'desc',
+        },
+        skip: offset,
+        take: limit,
       },
-      orderBy: {
-        transactionDate: 'desc',
-      },
-    });
+      { useRetry: true, maxRetries: 2 }
+    );
   }
 
   async findOne(id: string, bankId: string): Promise<FinancialTransaction> {
@@ -282,6 +344,9 @@ export class BankTransactionService {
   }
 
   async findAllTransactions(filters?: FilterBankTransactionDto, userId?: string): Promise<FinancialTransaction[]> {
+    const { page = 1, limit = 50 } = filters || {};
+    const offset = (page - 1) * limit;
+    
     const where: any = {
       type: {
         in: ['CREDIT', 'DEBIT', 'TRANSFER']
@@ -306,24 +371,83 @@ export class BankTransactionService {
       }
     }
 
-    return this.prisma.financialTransaction.findMany({
-      where,
-      include: {
-        bank: true,
-        category: true,
-        paymentMethod: true,
-        transferFromBank: true,
-        transferToBank: true,
-        tags: {
-          include: {
-            tag: true,
+    return this.prisma.findManyOptimized(
+      this.prisma.financialTransaction,
+      {
+        where,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          amount: true,
+          transactionDate: true,
+          type: true,
+          status: true,
+          bankId: true,
+          categoryId: true,
+          paymentMethodId: true,
+          transferFromBankId: true,
+          transferToBankId: true,
+          linkedTransactionId: true,
+          createdAt: true,
+          updatedAt: true,
+          bank: {
+            select: {
+              id: true,
+              name: true,
+              accountNumber: true,
+              accountType: true,
+            },
+          },
+          category: {
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              icon: true,
+            },
+          },
+          paymentMethod: {
+            select: {
+              id: true,
+              name: true,
+              type: true,
+            },
+          },
+          transferFromBank: {
+            select: {
+              id: true,
+              name: true,
+              accountNumber: true,
+            },
+          },
+          transferToBank: {
+            select: {
+              id: true,
+              name: true,
+              accountNumber: true,
+            },
+          },
+          tags: {
+            select: {
+              tag: {
+                select: {
+                  id: true,
+                  name: true,
+                  color: true,
+                },
+              },
+            },
           },
         },
+        orderBy: {
+          transactionDate: 'desc',
+        },
+        skip: offset,
+        take: limit,
       },
-      orderBy: {
-        transactionDate: 'desc',
-      },
-    });
+      { useRetry: true, maxRetries: 2 }
+    );
   }
 
   async createTransfer(createTransferDto: CreateTransferDto, userId: string): Promise<{ transferTransaction: FinancialTransaction }> {

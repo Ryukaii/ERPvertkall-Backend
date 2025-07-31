@@ -1,6 +1,6 @@
-import { IsOptional, IsString, IsEnum, IsDateString, IsBoolean } from 'class-validator';
+import { IsOptional, IsString, IsEnum, IsDateString, IsBoolean, IsNumber, Min, Max } from 'class-validator';
 import { FinancialTransactionType, FinancialTransactionStatus } from '@prisma/client';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 
 export class FilterBankTransactionDto {
   @IsOptional()
@@ -35,4 +35,17 @@ export class FilterBankTransactionDto {
   @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
   all?: boolean;
+
+  @IsNumber()
+  @IsOptional()
+  @Type(() => Number)
+  @Min(1)
+  page?: number = 1;
+
+  @IsNumber()
+  @IsOptional()
+  @Type(() => Number)
+  @Min(1)
+  @Max(100)
+  limit?: number = 50;
 } 

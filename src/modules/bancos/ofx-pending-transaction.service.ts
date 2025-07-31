@@ -167,10 +167,21 @@ export class OfxPendingTransactionService {
       throw new BadRequestException('Nenhuma transação pendente encontrada para este import');
     }
 
-    const createdTransactions: any[] = [];
+    return await this.batchCreateFinancialTransactions(pendingTransactions, userId, importId);
+  }
+
+  /**
+   * Cria todas as transações financeiras em lote para melhor performance
+   */
+  private async batchCreateFinancialTransactions(
+    pendingTransactions: any[],
+    userId: string,
+    importId: string,
+  ) {
+    const validTransactions: any[] = [];
     const errors: Array<{ pendingTransactionId: string; error: string }> = [];
 
-    // Converter cada transação pendente em FinancialTransaction
+    // Preparar dados para criação em lote
     for (const pending of pendingTransactions) {
       try {
         // Usar categoria final se definida, senão usar sugerida se confiança >= 70%
@@ -180,30 +191,66 @@ export class OfxPendingTransactionService {
           categoryId = pending.suggestedCategoryId;
         }
 
-        const financialTransaction = await this.prisma.financialTransaction.create({
-          data: {
-            title: pending.title,
-            description: pending.description,
-            amount: pending.amount,
-            type: pending.type,
-            status: FinancialTransactionStatus.PAID,
-            transactionDate: pending.transactionDate,
-            dueDate: pending.transactionDate,
-            paidDate: pending.transactionDate,
-            categoryId,
-            userId,
-            bankId: pending.ofxImport.bankId,
-            ofxImportId: importId,
-          },
-        });
+        // Validar dados essenciais
+        if (!pending.title || !pending.amount || !pending.transactionDate) {
+          throw new Error('Dados obrigatórios ausentes (title, amount, transactionDate)');
+        }
 
-        createdTransactions.push(financialTransaction);
+        validTransactions.push({
+          title: pending.title,
+          description: pending.description,
+          amount: pending.amount,
+          type: pending.type,
+          status: FinancialTransactionStatus.PAID,
+          transactionDate: pending.transactionDate,
+          dueDate: pending.transactionDate,
+          paidDate: pending.transactionDate,
+          categoryId,
+          userId,
+          bankId: pending.ofxImport.bankId,
+          ofxImportId: importId,
+        });
 
       } catch (error) {
         errors.push({
           pendingTransactionId: pending.id,
           error: error.message,
         });
+      }
+    }
+
+    let createdTransactions: any[] = [];
+
+    // Criar todas as transações válidas em lote
+    if (validTransactions.length > 0) {
+      try {
+        console.log(`🚀 Criando ${validTransactions.length} transações em lote...`);
+        
+        const result = await this.prisma.financialTransaction.createMany({
+          data: validTransactions,
+          skipDuplicates: true, // Pular duplicatas se houver
+        });
+
+        console.log(`✅ ${result.count} transações criadas com sucesso`);
+
+        // Buscar as transações criadas para retornar os IDs
+        createdTransactions = await this.prisma.financialTransaction.findMany({
+          where: {
+            ofxImportId: importId,
+            userId,
+          },
+          orderBy: {
+            createdAt: 'desc',
+          },
+          take: result.count,
+        });
+
+      } catch (error) {
+        console.error('❌ Erro ao criar transações em lote:', error);
+        
+        // Se falhar em lote, tentar criar uma por uma (fallback)
+        console.log('🔄 Tentando criação individual como fallback...');
+        createdTransactions = await this.createTransactionsIndividually(validTransactions, errors);
       }
     }
 
@@ -232,6 +279,32 @@ export class OfxPendingTransactionService {
       transactions: createdTransactions,
       errors,
     };
+  }
+
+  /**
+   * Fallback: criar transações uma por uma se a criação em lote falhar
+   */
+  private async createTransactionsIndividually(
+    validTransactions: any[],
+    errors: Array<{ pendingTransactionId: string; error: string }>,
+  ): Promise<any[]> {
+    const createdTransactions: any[] = [];
+
+    for (let i = 0; i < validTransactions.length; i++) {
+      try {
+        const transaction = await this.prisma.financialTransaction.create({
+          data: validTransactions[i],
+        });
+        createdTransactions.push(transaction);
+      } catch (error) {
+        errors.push({
+          pendingTransactionId: `batch_${i}`,
+          error: error.message,
+        });
+      }
+    }
+
+    return createdTransactions;
   }
 
   async getImportSummary(importId: string) {

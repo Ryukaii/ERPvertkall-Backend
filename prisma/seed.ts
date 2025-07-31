@@ -65,11 +65,12 @@ async function main() {
   });
 
   // Criar permissões para o admin
-  const financeiroResources = ['categories', 'transactions', 'payment_methods', 'recurring_transactions'];
+  const financeiroResources = ['categories', 'transactions', 'payment_methods', 'recurring_payments'];
   const bancosResources = ['banks', 'bank_transactions', 'ofx_imports', 'transfers', 'ai_categorization'];
   const unidadesResources = ['unidades'];
   const tagsResources = ['tags'];
   const actions = ['read', 'write'];
+  const deleteActions = ['read', 'write', 'delete'];
 
   // Permissões do módulo financeiro
   for (const resource of financeiroResources) {
@@ -97,7 +98,8 @@ async function main() {
 
   // Permissões do módulo bancos
   for (const resource of bancosResources) {
-    for (const action of actions) {
+    const resourceActions = resource === 'ofx_imports' ? deleteActions : actions;
+    for (const action of resourceActions) {
       await prisma.userPermission.upsert({
         where: {
           userId_moduleId_resource_action: {

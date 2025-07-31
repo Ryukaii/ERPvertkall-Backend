@@ -40,15 +40,19 @@ export class TagsService {
       where.isActive = isActive;
     }
 
-    const [tags, total] = await Promise.all([
+    // Use sequential queries with retry to avoid pool exhaustion
+    const tags = await this.prisma.executeWithRetry(() => 
       this.prisma.tag.findMany({
         where,
         skip,
         take: limit,
         orderBy: { name: 'asc' },
-      }),
-      this.prisma.tag.count({ where }),
-    ]);
+      })
+    );
+    
+    const total = await this.prisma.executeWithRetry(() => 
+      this.prisma.tag.count({ where })
+    );
 
     return {
       data: tags,

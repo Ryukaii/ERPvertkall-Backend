@@ -9,9 +9,12 @@ import {
   UploadedFile,
   BadRequestException,
   UseGuards,
+  NotFoundException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { OfxImportService } from './ofx-import.service';
+import { OfxBulkProcessorService } from './services/ofx-bulk-processor.service';
+import { OfxClusterManager } from './workers/ofx-cluster-manager';
 import { ImportOfxDto } from './dto/import-ofx.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { ModuleAccessGuard } from '../../common/guards/module-access.guard';
@@ -25,7 +28,11 @@ import { User } from '@prisma/client';
 @UseGuards(JwtAuthGuard, ModuleAccessGuard, PermissionGuard)
 @RequireModule('bancos')
 export class OfxImportController {
-  constructor(private readonly ofxImportService: OfxImportService) {}
+  constructor(
+    private readonly ofxImportService: OfxImportService,
+    private readonly bulkProcessor: OfxBulkProcessorService,
+    private readonly clusterManager: OfxClusterManager,
+  ) {}
 
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
@@ -68,16 +75,19 @@ export class OfxImportController {
 
 
   @Get()
+  @Permission('bancos', 'ofx_imports', 'read')
   async findAll() {
     return this.ofxImportService.findAll();
   }
 
   @Get(':id')
+  @Permission('bancos', 'ofx_imports', 'read')
   async findOne(@Param('id') id: string) {
     return this.ofxImportService.findOne(id);
   }
 
   @Get(':id/status')
+  @Permission('bancos', 'ofx_imports', 'read')
   async getImportStatus(@Param('id') id: string) {
     const status = await this.ofxImportService.getImportStatus(id);
     
@@ -90,8 +100,33 @@ export class OfxImportController {
   }
 
   @Delete(':id')
+  @Permission('bancos', 'ofx_imports', 'delete')
   async remove(@Param('id') id: string) {
     await this.ofxImportService.remove(id);
     return { message: 'Importação OFX excluída com sucesso' };
+  }
+
+  @Get(':id/metrics')
+  @Permission('bancos', 'ofx_imports', 'read')
+  async getPerformanceMetrics(@Param('id') id: string) {
+    const metrics = await this.bulkProcessor.getPerformanceMetrics(id);
+    
+    if (!metrics) {
+      throw new NotFoundException('Importação OFX não encontrada');
+    }
+    
+    return {
+      ...metrics,
+      clusterStats: this.clusterManager.getStats(),
+    };
+  }
+
+  @Get('cluster/stats')
+  @Permission('bancos', 'ofx_imports', 'read')
+  async getClusterStats() {
+    return {
+      cluster: this.clusterManager.getStats(),
+      message: 'Estatísticas do cluster OFX',
+    };
   }
 } 

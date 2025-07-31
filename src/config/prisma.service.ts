@@ -5,6 +5,7 @@ import { PrismaClient } from '@prisma/client';
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
   private isConnected = false;
+  private activeConnections = 0;
 
   constructor() {
     const isProduction = process.env.NODE_ENV === 'production';
@@ -19,29 +20,45 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         },
       },
       // Configuration optimized for Supabase/Heroku production
-      log: ['error', 'warn'],
+      log: isProduction ? ['error'] : ['error', 'warn'],
       errorFormat: 'pretty',
     });
 
     // Add middleware for connection monitoring with performance tracking
     this.$use(async (params, next) => {
       const start = Date.now();
+      this.activeConnections++;
+      
+      // Log high connection usage
+      if (this.activeConnections > 7) {
+        this.logger.warn(`High connection usage detected: ${this.activeConnections} active connections`);
+      }
+      
       try {
         const result = await next(params);
         const duration = Date.now() - start;
         
-        // Only log slow queries (over 1000ms) or errors
-        if (duration > 1000) {
-          this.logger.warn(`Slow query detected: ${params.model}.${params.action} took ${duration}ms`);
-        } else if (duration > 500) {
-          this.logger.debug(`Query ${params.model}.${params.action} took ${duration}ms`);
+        // Only log slow queries (over 500ms in production, 1000ms in development)
+        const slowThreshold = isProduction ? 500 : 1000;
+        if (duration > slowThreshold) {
+          this.logger.warn(`Slow query detected: ${params.model}.${params.action} took ${duration}ms (${this.activeConnections} active connections)`);
+        } else if (duration > 200 && !isProduction) {
+          this.logger.debug(`Query ${params.model}.${params.action} took ${duration}ms (${this.activeConnections} active connections)`);
         }
         
         return result;
       } catch (error) {
         const duration = Date.now() - start;
-        this.logger.error(`Query ${params.model}.${params.action} failed after ${duration}ms: ${error.message}`);
+        
+        // Special handling for connection pool timeouts
+        if (error.code === 'P2024') {
+          this.logger.error(`Connection pool timeout: ${params.model}.${params.action} failed after ${duration}ms with ${this.activeConnections} active connections. Pool exhausted!`);
+        } else {
+          this.logger.error(`Query ${params.model}.${params.action} failed after ${duration}ms: ${error.message}`);
+        }
         throw error;
+      } finally {
+        this.activeConnections--;
       }
     });
   }
@@ -116,11 +133,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     
     // Add Supabase-specific query parameters for better stability
     url.searchParams.set('pgbouncer', 'true');
-    url.searchParams.set('connection_limit', '5');
-    url.searchParams.set('pool_timeout', '30');
+    url.searchParams.set('connection_limit', '10'); // Increased from 3 to 10
+    url.searchParams.set('pool_timeout', '60'); // Increased from 20 to 60
     url.searchParams.set('statement_cache_size', '0'); // Disable prepared statements
     url.searchParams.set('prepared_statements', 'false');
     url.searchParams.set('schema', 'public');
+    url.searchParams.set('idle_in_transaction_session_timeout', '60000'); // 60 seconds
+    url.searchParams.set('statement_timeout', '45000'); // 45 seconds
     
     return url.toString();
   }
@@ -148,5 +167,51 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       this.logger.error('❌ Failed to reconnect to database:', error);
       throw error;
     }
+  }
+
+  // Optimized query methods for common operations
+  async findManyOptimized(model: any, args: any, options?: {
+    useRetry?: boolean;
+    maxRetries?: number;
+  }) {
+    const { useRetry = true, maxRetries = 2 } = options || {};
+    
+    if (useRetry) {
+      return this.executeWithRetry(() => model.findMany(args), maxRetries);
+    }
+    
+    return model.findMany(args);
+  }
+
+  // Batch operations for better performance
+  async batchOperation<T>(operations: (() => Promise<T>)[]): Promise<T[]> {
+    const results: T[] = [];
+    
+    for (const operation of operations) {
+      try {
+        const result = await this.executeWithRetry(operation);
+        results.push(result);
+      } catch (error) {
+        this.logger.error('Batch operation failed:', error);
+        throw error;
+      }
+    }
+    
+    return results;
+  }
+
+  // Connection pool monitoring
+  getPoolStatus() {
+    return {
+      activeConnections: this.activeConnections,
+      isConnected: this.isConnected,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  // Log connection pool status
+  logPoolStatus() {
+    const status = this.getPoolStatus();
+    this.logger.log(`Pool Status: ${JSON.stringify(status)}`);
   }
 } 

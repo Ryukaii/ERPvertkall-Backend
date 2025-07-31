@@ -30,10 +30,12 @@ export class PaymentMethodService {
   async findAll(includeInactive: boolean = false) {
     const where = includeInactive ? {} : { isActive: true };
     
-    return this.prisma.paymentMethod.findMany({
-      where,
-      orderBy: { name: 'asc' },
-    });
+    return this.prisma.executeWithRetry(() => 
+      this.prisma.paymentMethod.findMany({
+        where,
+        orderBy: { name: 'asc' },
+      })
+    );
   }
 
   async findOne(id: string) {

@@ -21,6 +21,7 @@ import { Permission } from '../../common/decorators/permission.decorator';
 import { User } from '@prisma/client';
 import { BankTransactionService } from './bank-transaction.service';
 import { FilterBankTransactionDto } from './dto/filter-bank-transaction.dto';
+import { TransactionFiltersDto } from './dto/transactions-summary.dto';
 
 @Controller('bancos')
 @UseGuards(JwtAuthGuard, ModuleAccessGuard, PermissionGuard)
@@ -94,5 +95,20 @@ export class BancosController {
   @Permission('bancos', 'banks', 'write')
   remove(@Param('id') id: string) {
     return this.bancosService.remove(id);
+  }
+
+  @Get('transactions/summary')
+  @Permission('bancos', 'bank_transactions', 'read')
+  getTransactionsSummary(
+    @CurrentUser() user: User,
+    @Query() filters: TransactionFiltersDto,
+  ) {
+    return this.bancosService.getTransactionsSummary(filters, user.id);
+  }
+
+  @Get('with-balance')
+  @Permission('bancos', 'banks', 'read')
+  getBanksWithBalance() {
+    return this.bancosService.getBanksWithBalance();
   }
 } 

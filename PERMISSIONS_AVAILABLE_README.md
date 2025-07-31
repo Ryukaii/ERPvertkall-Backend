@@ -91,7 +91,7 @@ Content-Type: application/json
       },
       {
         "resource": "ofx_imports",
-        "actions": ["write"]
+        "actions": ["read", "write", "delete"]
       }
     ]
   },

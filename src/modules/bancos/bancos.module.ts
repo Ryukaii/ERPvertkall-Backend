@@ -6,6 +6,9 @@ import { BankTransactionController } from './bank-transaction.controller';
 import { BankTransactionService } from './bank-transaction.service';
 import { OfxImportController } from './ofx-import.controller';
 import { OfxImportService } from './ofx-import.service';
+import { OfxClusterManager } from './workers/ofx-cluster-manager';
+import { OfxBulkProcessorService } from './services/ofx-bulk-processor.service';
+import { RegexOptimizationService } from './services/regex-optimization.service';
 import { AiCategorizationController } from './ai-categorization.controller';
 import { AiCategorizationService } from './ai-categorization.service';
 import { PaymentMethodSuggestionController } from './payment-method-suggestion.controller';
@@ -14,6 +17,7 @@ import { OfxPendingTransactionController } from './ofx-pending-transaction.contr
 import { OfxPendingTransactionService } from './ofx-pending-transaction.service';
 import { TransferController } from './transfer.controller';
 import { ConvertTransactionController } from './convert-transaction.controller';
+import { RegexStatsController } from './controllers/regex-stats.controller';
 import { PrismaService } from '../../config/prisma.service';
 import { TagsModule } from '../tags/tags.module';
 
@@ -28,6 +32,7 @@ import { TagsModule } from '../tags/tags.module';
     OfxPendingTransactionController,
     TransferController,
     ConvertTransactionController,
+    RegexStatsController,
   ],
   providers: [
     BancosService,
@@ -36,6 +41,9 @@ import { TagsModule } from '../tags/tags.module';
     AiCategorizationService,
     PaymentMethodSuggestionService,
     OfxPendingTransactionService,
+    OfxClusterManager,
+    OfxBulkProcessorService,
+    RegexOptimizationService,
     PrismaService,
   ],
 })

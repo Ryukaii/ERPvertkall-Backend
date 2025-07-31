@@ -1,5 +1,6 @@
-import { IsOptional, IsDateString, IsEnum, IsString } from 'class-validator';
+import { IsOptional, IsDateString, IsEnum, IsString, IsNumber, Min, Max } from 'class-validator';
 import { FinancialTransactionType, FinancialTransactionStatus } from '@prisma/client';
+import { Type } from 'class-transformer';
 
 export class FilterFinancialTransactionDto {
   @IsDateString()
@@ -29,4 +30,17 @@ export class FilterFinancialTransactionDto {
   @IsString()
   @IsOptional()
   search?: string; // Para buscar por título ou descrição
+
+  @IsNumber()
+  @IsOptional()
+  @Type(() => Number)
+  @Min(1)
+  page?: number = 1;
+
+  @IsNumber()
+  @IsOptional()
+  @Type(() => Number)
+  @Min(1)
+  @Max(100)
+  limit?: number = 50;
 } 
