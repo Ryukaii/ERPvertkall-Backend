@@ -141,7 +141,6 @@ export class PaymentMethodSuggestionService {
         where: { id: pendingTransactionId },
         data: {
           suggestedPaymentMethodId: paymentMethodId,
-          suggestedPaymentMethodName: paymentMethod.name,
           paymentMethodConfidence: confidence,
         },
       });

@@ -1,153 +1,84 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../config/prisma.service';
+import { RedisCacheService } from '../../common/services/redis-cache.service';
 import { CreateFinancialTransactionDto } from './dto/create-financial-transaction.dto';
 import { UpdateFinancialTransactionDto } from './dto/update-financial-transaction.dto';
 import { FilterFinancialTransactionDto } from './dto/filter-financial-transaction.dto';
-import { MakeRecurringDto } from './dto/make-recurring.dto';
-import { FinancialTransactionStatus, Prisma, RecurrenceFrequency } from '@prisma/client';
-import { TagsService } from '../tags/tags.service';
+import { FinancialTransactionType, FinancialTransactionStatus } from '@prisma/client';
+
+export interface PaginationResult<T> {
+  data: T[];
+  nextCursor?: string;
+  hasMore: boolean;
+  total: number;
+}
 
 @Injectable()
 export class FinancialTransactionService {
+  private readonly logger = new Logger(FinancialTransactionService.name);
+
   constructor(
     private prisma: PrismaService,
-    private tagsService: TagsService,
+    private cacheService: RedisCacheService,
   ) {}
 
-  async create(createFinancialTransactionDto: CreateFinancialTransactionDto, userId: string) {
-    const { 
-      title, 
-      description, 
-      amount, 
-      dueDate, 
-      paidDate, 
-      type, 
-      status, 
-      categoryId, 
-      paymentMethodId,
-      tagIds
-    } = createFinancialTransactionDto;
-
-    // Verificar se a categoria existe
-    await this.prisma.financialCategory.findUniqueOrThrow({
-      where: { id: categoryId },
-    });
-
-    // Verificar se o método de pagamento existe (se fornecido)
-    if (paymentMethodId) {
-      await this.prisma.paymentMethod.findUniqueOrThrow({
-        where: { id: paymentMethodId },
-      });
-    }
-
-    // Validar tags se fornecidas
-    if (tagIds && tagIds.length > 0) {
-      const validTags = await this.tagsService.findByIds(tagIds);
-      if (validTags.length !== tagIds.length) {
-        throw new BadRequestException('Uma ou mais tags são inválidas ou estão inativas');
-      }
-    }
-
-    // Validar datas
-    const dueDateObj = new Date(dueDate);
-    const paidDateObj = paidDate ? new Date(paidDate) : null;
-
-    if (paidDateObj && paidDateObj < dueDateObj && status === FinancialTransactionStatus.PAID) {
-      // Permitir pagamento antecipado
-    }
-
-    // Criar transação
-    const transaction = await this.prisma.financialTransaction.create({
-      data: {
-        title,
-        description,
-        amount,
-        dueDate: dueDateObj,
-        paidDate: paidDateObj,
-        type,
-        status: status || FinancialTransactionStatus.PENDING,
-        categoryId,
-        paymentMethodId,
-        userId,
-      },
-    });
-
-    // Adicionar tags se fornecidas
-    if (tagIds && tagIds.length > 0) {
-      await this.prisma.financialTransactionTag.createMany({
-        data: tagIds.map(tagId => ({
-          financialTransactionId: transaction.id,
-          tagId,
-        })),
-      });
-    }
-
-    // Retornar transação com todos os relacionamentos
-    return this.prisma.financialTransaction.findUnique({
-      where: { id: transaction.id },
-      include: {
-        category: true,
-        paymentMethod: true,
-        user: {
-          select: { id: true, name: true, email: true },
+  /**
+   * Criar transação financeira com cache invalidation
+   */
+  async create(createDto: CreateFinancialTransactionDto, userId: string) {
+    try {
+      const transaction = await this.prisma.financialTransaction.create({
+        data: {
+          ...createDto,
+          userId,
         },
-        tags: {
-          include: {
-            tag: true,
+        include: {
+          category: true,
+          paymentMethod: true,
+          bank: true,
+          tags: {
+            include: {
+              tag: true,
+            },
           },
         },
-      },
-    });
+      });
+
+      // Invalidar cache relacionado
+      await this.invalidateUserCache(userId);
+      
+      this.logger.log(`✅ Transação criada: ${transaction.id}`);
+      return transaction;
+    } catch (error) {
+      this.logger.error('Erro ao criar transação:', error);
+      throw new BadRequestException('Erro ao criar transação financeira');
+    }
   }
 
-  async findAll(filterDto: FilterFinancialTransactionDto, userId: string, userIsAdmin: boolean = false) {
-    const { 
-      startDate, 
-      endDate, 
-      type, 
-      status, 
-      categoryId, 
-      paymentMethodId, 
-      search,
-      page = 1,
-      limit = 50
-    } = filterDto;
+  /**
+   * Buscar transações com paginação cursor-based otimizada
+   */
+  async findAll(
+    userId: string,
+    filters: FilterFinancialTransactionDto,
+    cursor?: string,
+    limit: number = 50,
+  ): Promise<PaginationResult<any>> {
+    try {
+      // Verificar cache primeiro
+      const cacheKey = `transactions:${userId}:${JSON.stringify(filters)}:${cursor || 'first'}`;
+      const cached = await this.cacheService.get<PaginationResult<any>>(cacheKey);
+      
+      if (cached) {
+        this.logger.debug('📦 Retornando dados do cache');
+        return cached;
+      }
 
-    const where: any = {};
+      // Construir where clause otimizada
+      const where = this.buildWhereClause(userId, filters);
 
-    // Se o usuário não é admin, filtrar apenas suas transações
-    if (!userIsAdmin) {
-      where.userId = userId;
-    }
-
-    // Filtro por período
-    if (startDate || endDate) {
-      where.dueDate = {};
-      if (startDate) where.dueDate.gte = new Date(startDate);
-      if (endDate) where.dueDate.lte = new Date(endDate);
-    }
-
-    // Outros filtros
-    if (type) where.type = type;
-    if (status) where.status = status;
-    if (categoryId) where.categoryId = categoryId;
-    if (paymentMethodId) where.paymentMethodId = paymentMethodId;
-
-    // Busca por texto
-    if (search) {
-      where.OR = [
-        { title: { contains: search, mode: 'insensitive' } },
-        { description: { contains: search, mode: 'insensitive' } },
-      ];
-    }
-
-    // Calcular offset para paginação
-    const offset = (page - 1) * limit;
-
-    // Usar método otimizado do PrismaService
-    const transactions = await this.prisma.findManyOptimized(
-      this.prisma.financialTransaction,
-      {
+      // Query otimizada com select específico
+      const transactions = await this.prisma.financialTransaction.findMany({
         where,
         select: {
           id: true,
@@ -158,19 +89,15 @@ export class FinancialTransactionService {
           paidDate: true,
           type: true,
           status: true,
-          isRecurring: true,
-          recurrenceFrequency: true,
-          recurrenceInterval: true,
-          recurrenceEndDate: true,
-          originalTransactionId: true,
           createdAt: true,
           updatedAt: true,
+          isRecurring: true,
+          transactionDate: true,
           category: {
             select: {
               id: true,
               name: true,
               color: true,
-              icon: true,
             },
           },
           paymentMethod: {
@@ -180,550 +107,583 @@ export class FinancialTransactionService {
               type: true,
             },
           },
-          user: {
-            select: { 
-              id: true, 
-              name: true, 
-              email: true 
+          bank: {
+            select: {
+              id: true,
+              name: true,
+              accountNumber: true,
+            },
+          },
+          tags: {
+            select: {
+              tag: {
+                select: {
+                  id: true,
+                  name: true,
+                  color: true,
+                },
+              },
             },
           },
         },
-        orderBy: { dueDate: 'desc' },
-        skip: offset,
-        take: limit,
-      },
-      { useRetry: true, maxRetries: 2 }
-    );
+        take: limit + 1, // Pegar um extra para verificar se há mais
+        ...(cursor && { cursor: { id: cursor } }),
+        orderBy: { id: 'asc' }, // Ordenação consistente para cursor
+      });
 
-    // Converter datas para ISO strings usando uma abordagem mais robusta
-    return transactions.map(transaction => {
-      const transformed: any = { ...transaction };
+      // Verificar se há mais dados
+      const hasMore = transactions.length > limit;
+      const data = hasMore ? transactions.slice(0, limit) : transactions;
+      const nextCursor = hasMore ? data[data.length - 1]?.id : undefined;
+
+      // Contar total (otimizado com cache)
+      const total = await this.getTotalCount(userId, filters);
+
+      const result: PaginationResult<any> = {
+        data,
+        nextCursor,
+        hasMore,
+        total,
+      };
+
+      // Salvar no cache
+      await this.cacheService.set(cacheKey, result, 2 * 60); // 2 minutos
+
+      return result;
+    } catch (error) {
+      this.logger.error('Erro ao buscar transações:', error);
+      throw new BadRequestException('Erro ao buscar transações');
+    }
+  }
+
+  /**
+   * Buscar transação por ID com cache
+   */
+  async findOne(id: string, userId: string) {
+    try {
+      // Verificar cache
+      const cacheKey = `transaction:${id}:${userId}`;
+      const cached = await this.cacheService.get(cacheKey);
       
-      // Função auxiliar para converter datas
-      const convertDate = (date: any): string | null => {
-        if (!date) return null;
-        if (typeof date === 'string') return date;
-        if (date instanceof Date) return date.toISOString();
-        if (typeof date === 'object' && date.getTime) return new Date(date.getTime()).toISOString();
-        return null;
-      };
-
-      // Converter campos de data
-      transformed.dueDate = convertDate(transaction.dueDate);
-      transformed.paidDate = convertDate(transaction.paidDate);
-      transformed.createdAt = convertDate(transaction.createdAt);
-      transformed.updatedAt = convertDate(transaction.updatedAt);
-      transformed.recurrenceEndDate = convertDate(transaction.recurrenceEndDate);
-
-      // Converter datas dos relacionamentos
-      if (transaction.category) {
-        transformed.category = {
-          ...transaction.category,
-          createdAt: convertDate(transaction.category.createdAt),
-          updatedAt: convertDate(transaction.category.updatedAt),
-        };
+      if (cached) {
+        return cached;
       }
 
-      if (transaction.paymentMethod) {
-        transformed.paymentMethod = {
-          ...transaction.paymentMethod,
-          createdAt: convertDate(transaction.paymentMethod.createdAt),
-          updatedAt: convertDate(transaction.paymentMethod.updatedAt),
-        };
-      }
-
-      return transformed;
-    });
-  }
-
-  async findOne(id: string, userId: string, userIsAdmin: boolean = false) {
-    const where: any = { id };
-    
-    // Se o usuário não é admin, verificar se a transação pertence a ele
-    if (!userIsAdmin) {
-      where.userId = userId;
-    }
-
-    const transaction = await this.prisma.financialTransaction.findFirst({
-      where,
-      include: {
-        category: true,
-        paymentMethod: true,
-        user: {
-          select: { id: true, name: true, email: true },
-        },
-      },
-    });
-
-    if (!transaction) {
-      throw new NotFoundException('Transação não encontrada');
-    }
-
-    // Função auxiliar para converter datas
-    const convertDate = (date: any): string | null => {
-      if (!date) return null;
-      if (typeof date === 'string') return date;
-      if (date instanceof Date) return date.toISOString();
-      if (typeof date === 'object' && date.getTime) return new Date(date.getTime()).toISOString();
-      return null;
-    };
-
-    // Converter datas para ISO strings
-    const transformed: any = { ...transaction };
-    
-    // Converter campos de data
-    transformed.dueDate = convertDate(transaction.dueDate);
-    transformed.paidDate = convertDate(transaction.paidDate);
-    transformed.createdAt = convertDate(transaction.createdAt);
-    transformed.updatedAt = convertDate(transaction.updatedAt);
-    transformed.recurrenceEndDate = convertDate(transaction.recurrenceEndDate);
-
-    // Converter datas dos relacionamentos
-    if (transaction.category) {
-      transformed.category = {
-        ...transaction.category,
-        createdAt: convertDate(transaction.category.createdAt),
-        updatedAt: convertDate(transaction.category.updatedAt),
-      };
-    }
-
-    if (transaction.paymentMethod) {
-      transformed.paymentMethod = {
-        ...transaction.paymentMethod,
-        createdAt: convertDate(transaction.paymentMethod.createdAt),
-        updatedAt: convertDate(transaction.paymentMethod.updatedAt),
-      };
-    }
-
-    return transformed;
-  }
-
-  async update(id: string, updateFinancialTransactionDto: UpdateFinancialTransactionDto, userId: string, userIsAdmin: boolean = false) {
-    // Verificar se a transação existe e se o usuário tem permissão para editá-la
-    await this.findOne(id, userId, userIsAdmin);
-
-    const { categoryId, paymentMethodId, dueDate, paidDate } = updateFinancialTransactionDto;
-
-    // Verificar se a categoria existe (se fornecida)
-    if (categoryId) {
-      await this.prisma.financialCategory.findUniqueOrThrow({
-        where: { id: categoryId },
-      });
-    }
-
-    // Verificar se o método de pagamento existe (se fornecido)
-    if (paymentMethodId) {
-      await this.prisma.paymentMethod.findUniqueOrThrow({
-        where: { id: paymentMethodId },
-      });
-    }
-
-    // Filtrar apenas campos que foram fornecidos para evitar problemas com undefined
-    const dataToUpdate: any = {};
-    
-    // Apenas adicionar campos que não são undefined
-    Object.keys(updateFinancialTransactionDto).forEach(key => {
-      const value = updateFinancialTransactionDto[key];
-      if (value !== undefined) {
-        dataToUpdate[key] = value;
-      }
-    });
-
-    // Converter datas se fornecidas
-    if (dueDate) dataToUpdate.dueDate = new Date(dueDate);
-    if (paidDate) dataToUpdate.paidDate = new Date(paidDate);
-
-    // Verificar se há dados para atualizar
-    if (Object.keys(dataToUpdate).length === 0) {
-      throw new BadRequestException('Nenhum campo fornecido para atualização');
-    }
-
-    return this.prisma.financialTransaction.update({
-      where: { id },
-      data: dataToUpdate,
-      include: {
-        category: true,
-        paymentMethod: true,
-      },
-    });
-  }
-
-  async remove(id: string, userId: string, deleteAllRecurring: boolean = false, userIsAdmin: boolean = false) {
-    const transaction = await this.findOne(id, userId, userIsAdmin);
-
-    // Se a transação foi criada por recorrência, perguntar se quer deletar todas
-    if (transaction.originalTransactionId && !deleteAllRecurring) {
-      // Buscar todas as transações relacionadas
-      const relatedTransactions = await this.prisma.financialTransaction.findMany({
-        where: {
-          OR: [
-            { id: transaction.originalTransactionId },
-            { originalTransactionId: transaction.originalTransactionId },
-          ],
+      const transaction = await this.prisma.financialTransaction.findFirst({
+        where: { id, userId },
+        include: {
+          category: true,
+          paymentMethod: true,
+          bank: true,
+          tags: {
+            include: {
+              tag: true,
+            },
+          },
+          linkedTransaction: true,
+          linkedTransactions: true,
+          originalTransaction: true,
+          recurringTransactions: true,
         },
       });
 
-      return {
-        message: 'Esta transação foi criada por recorrência. Deseja deletar apenas esta transação ou todas as transações relacionadas?',
-        transaction,
-        relatedTransactions,
-        requiresConfirmation: true,
-      };
-    }
+      if (!transaction) {
+        throw new NotFoundException('Transação não encontrada');
+      }
 
-    // Se é uma transação original e tem transações recorrentes
-    if (transaction.isRecurring && !deleteAllRecurring) {
-      const recurringTransactions = await this.prisma.financialTransaction.findMany({
-        where: { originalTransactionId: id },
+      // Salvar no cache
+      await this.cacheService.set(cacheKey, transaction, 5 * 60); // 5 minutos
+
+      return transaction;
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      this.logger.error('Erro ao buscar transação:', error);
+      throw new BadRequestException('Erro ao buscar transação');
+    }
+  }
+
+  /**
+   * Atualizar transação com cache invalidation
+   */
+  async update(id: string, updateDto: UpdateFinancialTransactionDto, userId: string) {
+    try {
+      const transaction = await this.prisma.financialTransaction.findFirst({
+        where: { id, userId },
       });
 
-      if (recurringTransactions.length > 0) {
-        return {
-          message: 'Esta transação é recorrente. Deseja deletar apenas esta transação ou todas as transações recorrentes?',
-          transaction,
-          recurringTransactions,
-          requiresConfirmation: true,
-        };
+      if (!transaction) {
+        throw new NotFoundException('Transação não encontrada');
       }
-    }
 
-    // Deletar transações relacionadas se solicitado
-    if (deleteAllRecurring) {
-      if (transaction.originalTransactionId) {
-        // Deletar todas as transações relacionadas
-        await this.prisma.financialTransaction.deleteMany({
-          where: {
-            OR: [
-              { id: transaction.originalTransactionId },
-              { originalTransactionId: transaction.originalTransactionId },
-            ],
+      const updatedTransaction = await this.prisma.financialTransaction.update({
+        where: { id },
+        data: updateDto,
+        include: {
+          category: true,
+          paymentMethod: true,
+          bank: true,
+          tags: {
+            include: {
+              tag: true,
+            },
           },
-        });
-      } else if (transaction.isRecurring) {
-        // Deletar todas as transações recorrentes
-        await this.prisma.financialTransaction.deleteMany({
-          where: {
-            OR: [
-              { id },
-              { originalTransactionId: id },
-            ],
-          },
-        });
+        },
+      });
+
+      // Invalidar cache relacionado
+      await this.invalidateUserCache(userId);
+      await this.cacheService.invalidate(`transaction:${id}:*`);
+
+      this.logger.log(`✅ Transação atualizada: ${id}`);
+      return updatedTransaction;
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      this.logger.error('Erro ao atualizar transação:', error);
+      throw new BadRequestException('Erro ao atualizar transação');
+    }
+  }
+
+  /**
+   * Remover transação com cache invalidation
+   */
+  async remove(id: string, userId: string) {
+    try {
+      const transaction = await this.prisma.financialTransaction.findFirst({
+        where: { id, userId },
+      });
+
+      if (!transaction) {
+        throw new NotFoundException('Transação não encontrada');
       }
-    } else {
-      // Deletar apenas a transação específica
+
       await this.prisma.financialTransaction.delete({
         where: { id },
       });
-    }
 
-    return {
-      message: 'Transação deletada com sucesso',
-      deletedTransaction: transaction,
-    };
+      // Invalidar cache relacionado
+      await this.invalidateUserCache(userId);
+      await this.cacheService.invalidate(`transaction:${id}:*`);
+
+      this.logger.log(`✅ Transação removida: ${id}`);
+      return { message: 'Transação removida com sucesso' };
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      this.logger.error('Erro ao remover transação:', error);
+      throw new BadRequestException('Erro ao remover transação');
+    }
   }
 
-  async markAsPaid(id: string, userId: string, paidDate?: string, userIsAdmin: boolean = false) {
-    const transaction = await this.findOne(id, userId, userIsAdmin);
-
-    if (transaction.status === FinancialTransactionStatus.PAID) {
-      throw new BadRequestException('Transação já está marcada como paga');
-    }
-
-    return this.prisma.financialTransaction.update({
-      where: { id },
-      data: {
-        status: FinancialTransactionStatus.PAID,
-        paidDate: paidDate ? new Date(paidDate) : new Date(),
-      },
-      include: {
-        category: true,
-        paymentMethod: true,
-      },
-    });
-  }
-
-  async markAsOverdue(userId: string, userIsAdmin: boolean = false) {
-    const today = new Date();
-    today.setHours(23, 59, 59, 999); // Final do dia
-
-    const where: any = {
-      status: FinancialTransactionStatus.PENDING,
-      dueDate: { lt: today },
-    };
-
-    // Se o usuário não é admin, filtrar apenas suas transações
-    if (!userIsAdmin) {
-      where.userId = userId;
-    }
-
-    return this.prisma.financialTransaction.updateMany({
-      where,
-      data: {
-        status: FinancialTransactionStatus.OVERDUE,
-      },
-    });
-  }
-
-  async getDashboardSummary(userId: string, startDate?: string, endDate?: string, userIsAdmin: boolean = false) {
-    const where: any = {};
-
-    // Se o usuário não é admin, filtrar apenas suas transações
-    if (!userIsAdmin) {
-      where.userId = userId;
-    }
-
-    // Filtro por período
-    if (startDate || endDate) {
-      where.dueDate = {};
-      if (startDate) where.dueDate.gte = new Date(startDate);
-      if (endDate) where.dueDate.lte = new Date(endDate);
-    }
-
-    const [
-      totalReceivables,
-      totalPayables,
-      paidReceivables,
-      paidPayables,
-      overdueReceivables,
-      overduePayables,
-      transactionsByCategory,
-      transactionsByMonth
-    ] = await Promise.all([
-      // Total a receber
-      this.prisma.financialTransaction.aggregate({
-        where: { ...where, type: 'RECEIVABLE' },
-        _sum: { amount: true },
-        _count: true,
-      }),
-      // Total a pagar
-      this.prisma.financialTransaction.aggregate({
-        where: { ...where, type: 'PAYABLE' },
-        _sum: { amount: true },
-        _count: true,
-      }),
-      // Recebido
-      this.prisma.financialTransaction.aggregate({
-        where: { ...where, type: 'RECEIVABLE', status: 'PAID' },
-        _sum: { amount: true },
-        _count: true,
-      }),
-      // Pago
-      this.prisma.financialTransaction.aggregate({
-        where: { ...where, type: 'PAYABLE', status: 'PAID' },
-        _sum: { amount: true },
-        _count: true,
-      }),
-      // Vencido a receber
-      this.prisma.financialTransaction.aggregate({
-        where: { ...where, type: 'RECEIVABLE', status: 'OVERDUE' },
-        _sum: { amount: true },
-        _count: true,
-      }),
-      // Vencido a pagar
-      this.prisma.financialTransaction.aggregate({
-        where: { ...where, type: 'PAYABLE', status: 'OVERDUE' },
-        _sum: { amount: true },
-        _count: true,
-      }),
-      // Por categoria
-      this.prisma.financialTransaction.groupBy({
-        by: ['categoryId'],
-        where,
-        _sum: { amount: true },
-        _count: true,
-      }),
-      // Por mês
-      this.prisma.$queryRaw`
-        SELECT 
-          DATE_TRUNC('month', "dueDate") as month,
-          type,
-          SUM(amount) as total,
-          COUNT(*) as count
-        FROM "financial_transactions"
-        WHERE ${userIsAdmin ? Prisma.sql`1=1` : Prisma.sql`"userId" = ${userId}`}
-        ${startDate ? Prisma.sql`AND "dueDate" >= ${new Date(startDate)}` : Prisma.sql``}
-        ${endDate ? Prisma.sql`AND "dueDate" <= ${new Date(endDate)}` : Prisma.sql``}
-        GROUP BY DATE_TRUNC('month', "dueDate"), type
-        ORDER BY month DESC
-      `
-    ]);
-
-    return {
-      summary: {
-        receivables: {
-          total: totalReceivables._sum.amount || 0,
-          count: totalReceivables._count,
-          paid: paidReceivables._sum.amount || 0,
-          paidCount: paidReceivables._count,
-          overdue: overdueReceivables._sum.amount || 0,
-          overdueCount: overdueReceivables._count,
-        },
-        payables: {
-          total: totalPayables._sum.amount || 0,
-          count: totalPayables._count,
-          paid: paidPayables._sum.amount || 0,
-          paidCount: paidPayables._count,
-          overdue: overduePayables._sum.amount || 0,
-          overdueCount: overduePayables._count,
-        },
-        balance: {
-          total: (Number(totalReceivables._sum.amount) || 0) - (Number(totalPayables._sum.amount) || 0),
-          realized: (Number(paidReceivables._sum.amount) || 0) - (Number(paidPayables._sum.amount) || 0),
-        },
-      },
-      charts: {
-        byCategory: transactionsByCategory,
-        byMonth: transactionsByMonth,
-      },
-    };
-  }
-
-  async makeRecurring(transactionId: string, makeRecurringDto: MakeRecurringDto, userId: string, userIsAdmin: boolean = false) {
-    // Buscar a transação original
-    const originalTransaction = await this.findOne(transactionId, userId, userIsAdmin);
-
-    if (originalTransaction.isRecurring) {
-      throw new BadRequestException('Esta transação já é recorrente');
-    }
-
-    if (originalTransaction.originalTransactionId) {
-      throw new BadRequestException('Esta transação foi criada por recorrência e não pode ser tornada recorrente novamente');
-    }
-
-    const { frequency, interval, endDate } = makeRecurringDto;
-
-    // Calcular a data de fim da recorrência
-    let calculatedEndDate: Date | null = null;
-    
-    if (frequency === RecurrenceFrequency.UNTIL_END_OF_YEAR) {
-      const currentYear = new Date().getFullYear();
-      calculatedEndDate = new Date(currentYear, 11, 31); // 31 de dezembro do ano atual
-    } else if (endDate) {
-      calculatedEndDate = new Date(endDate);
-    } else {
-      // Calcular baseado no número de parcelas
-      if (originalTransaction.dueDate) {
-        calculatedEndDate = this.calculateEndDate(new Date(originalTransaction.dueDate), frequency, interval);
-      }
-    }
-
-    // Preparar dados para criação em lote
-    const transactionsToCreate: Prisma.FinancialTransactionCreateManyInput[] = [];
-    const startDate = originalTransaction.dueDate ? new Date(originalTransaction.dueDate) : new Date();
-
-    for (let i = 1; i < interval; i++) {
-      const nextDueDate = this.calculateNextDueDate(startDate, frequency, i);
+  /**
+   * Buscar resumo de transações com cache otimizado
+   */
+  async getSummary(userId: string, period: string = 'month') {
+    try {
+      // Verificar cache
+      const cacheKey = `summary:${userId}:${period}`;
+      const cached = await this.cacheService.get(cacheKey);
       
-      if (calculatedEndDate && nextDueDate > calculatedEndDate) {
-        break;
+      if (cached) {
+        return cached;
       }
 
-      transactionsToCreate.push({
-        title: originalTransaction.title,
-        description: originalTransaction.description,
-        amount: originalTransaction.amount,
-        dueDate: nextDueDate,
-        type: originalTransaction.type,
-        status: FinancialTransactionStatus.PENDING,
-        categoryId: originalTransaction.categoryId,
-        paymentMethodId: originalTransaction.paymentMethodId,
-        userId: originalTransaction.userId,
-        isRecurring: true,
-        originalTransactionId: transactionId,
-        recurrenceFrequency: frequency,
-        recurrenceInterval: interval,
-        recurrenceEndDate: calculatedEndDate,
-      });
+      const dateFilter = this.getDateFilter(period);
+
+      const [totalIncome, totalExpense, totalBalance, pendingCount, overdueCount] = await Promise.all([
+        this.prisma.financialTransaction.aggregate({
+          where: {
+            userId,
+            type: FinancialTransactionType.RECEIVABLE,
+            ...dateFilter,
+          },
+          _sum: { amount: true },
+        }),
+        this.prisma.financialTransaction.aggregate({
+          where: {
+            userId,
+            type: FinancialTransactionType.PAYABLE,
+            ...dateFilter,
+          },
+          _sum: { amount: true },
+        }),
+        this.prisma.financialTransaction.aggregate({
+          where: {
+            userId,
+            ...dateFilter,
+          },
+          _sum: { amount: true },
+        }),
+        this.prisma.financialTransaction.count({
+          where: {
+            userId,
+            status: FinancialTransactionStatus.PENDING,
+            ...dateFilter,
+          },
+        }),
+        this.prisma.financialTransaction.count({
+          where: {
+            userId,
+            status: FinancialTransactionStatus.OVERDUE,
+            ...dateFilter,
+          },
+        }),
+      ]);
+
+      const summary = {
+        totalIncome: totalIncome._sum.amount || 0,
+        totalExpense: totalExpense._sum.amount || 0,
+        totalBalance: totalBalance._sum.amount || 0,
+        pendingCount,
+        overdueCount,
+        period,
+      };
+
+      // Salvar no cache
+      await this.cacheService.set(cacheKey, summary, 5 * 60); // 5 minutos
+
+      return summary;
+    } catch (error) {
+      this.logger.error('Erro ao buscar resumo:', error);
+      throw new BadRequestException('Erro ao buscar resumo');
     }
+  }
 
-    // Criar todas as transações recorrentes em lotes otimizados
-    let createdTransactions: any[] = [];
-    if (transactionsToCreate.length > 0) {
-      // Usar processamento em lotes para melhor performance
-      await this.createTransactionsInBatches(transactionsToCreate);
+  /**
+   * Buscar resumo do dashboard
+   */
+  async getDashboardSummary(userId: string, startDate?: string, endDate?: string, isAdmin?: boolean) {
+    try {
+      const dateFilter = {
+        ...(startDate && { gte: new Date(startDate) }),
+        ...(endDate && { lte: new Date(endDate) }),
+      };
 
-      // Buscar as transações criadas com relacionamentos (apenas se necessário)
-      createdTransactions = await this.prisma.financialTransaction.findMany({
-        where: {
-          originalTransactionId: transactionId,
-          isRecurring: true,
+      const [totalIncome, totalExpense, pendingCount, overdueCount] = await Promise.all([
+        this.prisma.financialTransaction.aggregate({
+          where: {
+            userId,
+            type: FinancialTransactionType.RECEIVABLE,
+            ...(Object.keys(dateFilter).length > 0 && { transactionDate: dateFilter }),
+          },
+          _sum: { amount: true },
+        }),
+        this.prisma.financialTransaction.aggregate({
+          where: {
+            userId,
+            type: FinancialTransactionType.PAYABLE,
+            ...(Object.keys(dateFilter).length > 0 && { transactionDate: dateFilter }),
+          },
+          _sum: { amount: true },
+        }),
+        this.prisma.financialTransaction.count({
+          where: {
+            userId,
+            status: FinancialTransactionStatus.PENDING,
+            ...(Object.keys(dateFilter).length > 0 && { transactionDate: dateFilter }),
+          },
+        }),
+        this.prisma.financialTransaction.count({
+          where: {
+            userId,
+            status: FinancialTransactionStatus.OVERDUE,
+            ...(Object.keys(dateFilter).length > 0 && { transactionDate: dateFilter }),
+          },
+        }),
+      ]);
+
+      return {
+        totalIncome: totalIncome._sum.amount || 0,
+        totalExpense: totalExpense._sum.amount || 0,
+        pendingCount,
+        overdueCount,
+        period: { startDate, endDate },
+      };
+    } catch (error) {
+      this.logger.error('Erro ao buscar resumo do dashboard:', error);
+      throw new BadRequestException('Erro ao buscar resumo do dashboard');
+    }
+  }
+
+  /**
+   * Marcar transação como paga
+   */
+  async markAsPaid(id: string, userId: string, paidDate?: string) {
+    try {
+      const transaction = await this.prisma.financialTransaction.findFirst({
+        where: { id, userId },
+      });
+
+      if (!transaction) {
+        throw new NotFoundException('Transação não encontrada');
+      }
+
+      const updatedTransaction = await this.prisma.financialTransaction.update({
+        where: { id },
+        data: {
+          status: FinancialTransactionStatus.PAID,
+          paidDate: paidDate ? new Date(paidDate) : new Date(),
         },
         include: {
           category: true,
           paymentMethod: true,
-        },
-        orderBy: {
-          dueDate: 'asc',
+          bank: true,
         },
       });
+
+      // Invalidar cache relacionado
+      await this.invalidateUserCache(userId);
+
+      this.logger.log(`✅ Transação marcada como paga: ${id}`);
+      return updatedTransaction;
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      this.logger.error('Erro ao marcar transação como paga:', error);
+      throw new BadRequestException('Erro ao marcar transação como paga');
+    }
+  }
+
+  /**
+   * Marcar transações vencidas como overdue
+   */
+  async markAsOverdue(userId: string) {
+    try {
+      const today = new Date();
+      const overdueTransactions = await this.prisma.financialTransaction.findMany({
+        where: {
+          userId,
+          status: FinancialTransactionStatus.PENDING,
+          dueDate: { lt: today },
+        },
+      });
+
+      if (overdueTransactions.length > 0) {
+        await this.prisma.financialTransaction.updateMany({
+          where: {
+            userId,
+            status: FinancialTransactionStatus.PENDING,
+            dueDate: { lt: today },
+          },
+          data: {
+            status: FinancialTransactionStatus.OVERDUE,
+          },
+        });
+      }
+
+      // Invalidar cache relacionado
+      await this.invalidateUserCache(userId);
+
+      this.logger.log(`✅ ${overdueTransactions.length} transações marcadas como vencidas`);
+      return { 
+        message: `${overdueTransactions.length} transações marcadas como vencidas`,
+        count: overdueTransactions.length 
+      };
+    } catch (error) {
+      this.logger.error('Erro ao marcar transações como vencidas:', error);
+      throw new BadRequestException('Erro ao marcar transações como vencidas');
+    }
+  }
+
+  /**
+   * Tornar transação recorrente
+   */
+  async makeRecurring(id: string, makeRecurringDto: any, userId: string) {
+    try {
+      const transaction = await this.prisma.financialTransaction.findFirst({
+        where: { id, userId },
+      });
+
+      if (!transaction) {
+        throw new NotFoundException('Transação não encontrada');
+      }
+
+      const updatedTransaction = await this.prisma.financialTransaction.update({
+        where: { id },
+        data: {
+          isRecurring: true,
+          recurrenceInterval: makeRecurringDto.interval || 'monthly',
+          recurrenceEndDate: makeRecurringDto.endDate ? new Date(makeRecurringDto.endDate) : null,
+        },
+        include: {
+          category: true,
+          paymentMethod: true,
+          bank: true,
+        },
+      });
+
+      // Invalidar cache relacionado
+      await this.invalidateUserCache(userId);
+
+      this.logger.log(`✅ Transação tornada recorrente: ${id}`);
+      return updatedTransaction;
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      this.logger.error('Erro ao tornar transação recorrente:', error);
+      throw new BadRequestException('Erro ao tornar transação recorrente');
+    }
+  }
+
+  /**
+   * Buscar transações por categoria com cache
+   */
+  async findByCategory(userId: string, categoryId: string, cursor?: string, limit: number = 50) {
+    try {
+      const cacheKey = `transactions:category:${userId}:${categoryId}:${cursor || 'first'}`;
+      const cached = await this.cacheService.get(cacheKey);
+      
+      if (cached) {
+        return cached;
+      }
+
+      const transactions = await this.prisma.financialTransaction.findMany({
+        where: {
+          userId,
+          categoryId,
+        },
+        select: {
+          id: true,
+          title: true,
+          amount: true,
+          type: true,
+          status: true,
+          dueDate: true,
+          createdAt: true,
+        },
+        take: limit + 1,
+        ...(cursor && { cursor: { id: cursor } }),
+        orderBy: { id: 'asc' },
+      });
+
+      const hasMore = transactions.length > limit;
+      const data = hasMore ? transactions.slice(0, limit) : transactions;
+      const nextCursor = hasMore ? data[data.length - 1]?.id : undefined;
+
+      const result = {
+        data,
+        nextCursor,
+        hasMore,
+        categoryId,
+      };
+
+      await this.cacheService.set(cacheKey, result, 2 * 60);
+      return result;
+    } catch (error) {
+      this.logger.error('Erro ao buscar transações por categoria:', error);
+      throw new BadRequestException('Erro ao buscar transações por categoria');
+    }
+  }
+
+  /**
+   * Construir where clause otimizada
+   */
+  private buildWhereClause(userId: string, filters: FilterFinancialTransactionDto) {
+    const where: any = { userId };
+
+    if (filters.type) {
+      where.type = filters.type;
     }
 
-    // Atualizar a transação original para marcar como recorrente
-    await this.prisma.financialTransaction.update({
-      where: { id: transactionId },
-      data: {
-        isRecurring: true,
-        recurrenceFrequency: frequency,
-        recurrenceInterval: interval,
-        recurrenceEndDate: calculatedEndDate,
-      },
-    });
+    if (filters.status) {
+      where.status = filters.status;
+    }
+
+    if (filters.categoryId) {
+      where.categoryId = filters.categoryId;
+    }
+
+    if (filters.paymentMethodId) {
+      where.paymentMethodId = filters.paymentMethodId;
+    }
+
+    if (filters.startDate || filters.endDate) {
+      where.transactionDate = {};
+      if (filters.startDate) {
+        where.transactionDate.gte = new Date(filters.startDate);
+      }
+      if (filters.endDate) {
+        where.transactionDate.lte = new Date(filters.endDate);
+      }
+    }
+
+    // Adicionar busca por texto se fornecido
+    if (filters.search) {
+      where.OR = [
+        { title: { contains: filters.search, mode: 'insensitive' } },
+        { description: { contains: filters.search, mode: 'insensitive' } },
+      ];
+    }
+
+    return where;
+  }
+
+  /**
+   * Obter total count otimizado com cache
+   */
+  private async getTotalCount(userId: string, filters: FilterFinancialTransactionDto): Promise<number> {
+    try {
+      const cacheKey = `count:${userId}:${JSON.stringify(filters)}`;
+      const cached = await this.cacheService.get<number>(cacheKey);
+      
+      if (cached !== null) {
+        return cached;
+      }
+
+      const where = this.buildWhereClause(userId, filters);
+      const count = await this.prisma.financialTransaction.count({ where });
+
+      // Salvar count no cache por mais tempo
+      await this.cacheService.set(cacheKey, count, 10 * 60); // 10 minutos
+
+      return count;
+    } catch (error) {
+      this.logger.error('Erro ao contar transações:', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Obter filtro de data baseado no período
+   */
+  private getDateFilter(period: string) {
+    const now = new Date();
+    const startOfPeriod = new Date();
+
+    switch (period) {
+      case 'week':
+        startOfPeriod.setDate(now.getDate() - 7);
+        break;
+      case 'month':
+        startOfPeriod.setMonth(now.getMonth() - 1);
+        break;
+      case 'quarter':
+        startOfPeriod.setMonth(now.getMonth() - 3);
+        break;
+      case 'year':
+        startOfPeriod.setFullYear(now.getFullYear() - 1);
+        break;
+      default:
+        startOfPeriod.setMonth(now.getMonth() - 1);
+    }
 
     return {
-      message: `Transação tornada recorrente com ${createdTransactions.length} parcelas criadas`,
-      originalTransaction: await this.findOne(transactionId, userId, userIsAdmin),
-      recurringTransactions: createdTransactions,
+      transactionDate: {
+        gte: startOfPeriod,
+        lte: now,
+      },
     };
   }
 
-  private async createTransactionsInBatches(transactions: Prisma.FinancialTransactionCreateManyInput[], batchSize: number = 50) {
-    // Processar em lotes para evitar sobrecarga da memória e melhorar performance
-    for (let i = 0; i < transactions.length; i += batchSize) {
-      const batch = transactions.slice(i, i + batchSize);
-      
-      await this.prisma.financialTransaction.createMany({
-        data: batch,
-      });
+  /**
+   * Invalidar cache do usuário
+   */
+  private async invalidateUserCache(userId: string) {
+    try {
+      await Promise.all([
+        this.cacheService.invalidate(`transactions:${userId}:*`),
+        this.cacheService.invalidate(`summary:${userId}:*`),
+        this.cacheService.invalidate(`count:${userId}:*`),
+        this.cacheService.invalidate(`transactions:category:${userId}:*`),
+      ]);
+    } catch (error) {
+      this.logger.error('Erro ao invalidar cache do usuário:', error);
     }
-  }
-
-  private calculateNextDueDate(startDate: Date, frequency: RecurrenceFrequency, interval: number): Date {
-    const nextDate = new Date(startDate);
-    
-    switch (frequency) {
-      case RecurrenceFrequency.DAILY:
-        nextDate.setDate(nextDate.getDate() + interval);
-        break;
-      case RecurrenceFrequency.WEEKLY:
-        nextDate.setDate(nextDate.getDate() + (interval * 7));
-        break;
-      case RecurrenceFrequency.FORTNIGHTLY:
-        nextDate.setDate(nextDate.getDate() + (interval * 14));
-        break;
-      case RecurrenceFrequency.MONTHLY:
-        nextDate.setMonth(nextDate.getMonth() + interval);
-        break;
-      case RecurrenceFrequency.BIMONTHLY:
-        nextDate.setMonth(nextDate.getMonth() + (interval * 2));
-        break;
-      case RecurrenceFrequency.QUARTERLY:
-        nextDate.setMonth(nextDate.getMonth() + (interval * 3));
-        break;
-      case RecurrenceFrequency.SEMIANNUAL:
-        nextDate.setMonth(nextDate.getMonth() + (interval * 6));
-        break;
-      case RecurrenceFrequency.ANNUAL:
-        nextDate.setFullYear(nextDate.getFullYear() + interval);
-        break;
-      default:
-        throw new BadRequestException('Frequência inválida');
-    }
-    
-    return nextDate;
-  }
-
-  private calculateEndDate(startDate: Date, frequency: RecurrenceFrequency, interval: number): Date {
-    return this.calculateNextDueDate(startDate, frequency, interval - 1);
   }
 } 

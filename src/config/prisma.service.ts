@@ -133,13 +133,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     
     // Add Supabase-specific query parameters for better stability
     url.searchParams.set('pgbouncer', 'true');
-    url.searchParams.set('connection_limit', '10'); // Increased from 3 to 10
-    url.searchParams.set('pool_timeout', '60'); // Increased from 20 to 60
+    url.searchParams.set('connection_limit', '3'); // Reduced from 10 to 3 for better stability
+    url.searchParams.set('pool_timeout', '20'); // Reduced from 60 to 20 seconds
     url.searchParams.set('statement_cache_size', '0'); // Disable prepared statements
     url.searchParams.set('prepared_statements', 'false');
     url.searchParams.set('schema', 'public');
-    url.searchParams.set('idle_in_transaction_session_timeout', '60000'); // 60 seconds
-    url.searchParams.set('statement_timeout', '45000'); // 45 seconds
+    url.searchParams.set('idle_in_transaction_session_timeout', '30000'); // 30 seconds
+    url.searchParams.set('statement_timeout', '30000'); // 30 seconds
     
     return url.toString();
   }

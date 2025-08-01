@@ -8,6 +8,7 @@ import { FinancialTransactionController } from './financial-transaction.controll
 import { RecurringPaymentService } from './recurring-payment.service';
 import { RecurringPaymentController } from './recurring-payment.controller';
 import { PrismaService } from '../../config/prisma.service';
+import { RedisCacheService } from '../../common/services/redis-cache.service';
 import { TagsModule } from '../tags/tags.module';
 
 @Module({
@@ -23,6 +24,7 @@ import { TagsModule } from '../tags/tags.module';
     PaymentMethodService,
     FinancialTransactionService,
     PrismaService,
+    RedisCacheService,
     RecurringPaymentService,
   ],
   exports: [

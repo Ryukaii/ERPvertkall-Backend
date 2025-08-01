@@ -47,7 +47,7 @@ export class FinancialTransactionController {
     @Query() filterDto: FilterFinancialTransactionDto,
     @CurrentUser() user: any
   ) {
-    return this.financialTransactionService.findAll(filterDto, user.id, user.isAdmin);
+    return this.financialTransactionService.findAll(user.id, filterDto);
   }
 
   @Get('dashboard')
@@ -63,7 +63,7 @@ export class FinancialTransactionController {
   @Get(':id')
   @Permission('financeiro', 'transactions', 'read')
   findOne(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.financialTransactionService.findOne(id, user.id, user.isAdmin);
+    return this.financialTransactionService.findOne(id, user.id);
   }
 
   @Patch(':id')
@@ -73,7 +73,7 @@ export class FinancialTransactionController {
     @Body() updateFinancialTransactionDto: UpdateFinancialTransactionDto,
     @CurrentUser() user: any
   ) {
-    return this.financialTransactionService.update(id, updateFinancialTransactionDto, user.id, user.isAdmin);
+    return this.financialTransactionService.update(id, updateFinancialTransactionDto, user.id);
   }
 
   @Put(':id/mark-as-paid')
@@ -83,13 +83,13 @@ export class FinancialTransactionController {
     @Body('paidDate') paidDate: string,
     @CurrentUser() user: any
   ) {
-    return this.financialTransactionService.markAsPaid(id, user.id, paidDate, user.isAdmin);
+    return this.financialTransactionService.markAsPaid(id, user.id, paidDate);
   }
 
   @Put('mark-overdue')
   @Permission('financeiro', 'transactions', 'write')
   markAsOverdue(@CurrentUser() user: any) {
-    return this.financialTransactionService.markAsOverdue(user.id, user.isAdmin);
+    return this.financialTransactionService.markAsOverdue(user.id);
   }
 
   @Delete(':id')
@@ -100,7 +100,7 @@ export class FinancialTransactionController {
     @CurrentUser() user: any
   ) {
     const shouldDeleteAll = deleteAllRecurring === 'true';
-    return this.financialTransactionService.remove(id, user.id, shouldDeleteAll, user.isAdmin);
+    return this.financialTransactionService.remove(id, user.id);
   }
 
   @Post(':id/make-recurring')
@@ -110,6 +110,6 @@ export class FinancialTransactionController {
     @Body() makeRecurringDto: MakeRecurringDto,
     @CurrentUser() user: any
   ) {
-    return this.financialTransactionService.makeRecurring(id, makeRecurringDto, user.id, user.isAdmin);
+    return this.financialTransactionService.makeRecurring(id, makeRecurringDto, user.id);
   }
 } 

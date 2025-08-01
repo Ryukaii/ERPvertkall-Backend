@@ -58,11 +58,11 @@ model FinancialCategory {
   id                           String                   @id @default(cuid())
   name                         String                   @unique
   description                  String?
-  color                        String?                  @default("#3B82F6")
-  icon                         String?
   type                         FinancialTransactionType
   createdAt                    DateTime                 @default(now())
   updatedAt                    DateTime                 @updatedAt
+  color                        String?                  @default("#3B82F6")
+  icon                         String?
   transactions                 FinancialTransaction[]
   finalPendingTransactions     OfxPendingTransaction[]  @relation("FinalCategory")
   suggestedPendingTransactions OfxPendingTransaction[]  @relation("SuggestedCategory")
@@ -73,10 +73,10 @@ model FinancialCategory {
 model PaymentMethod {
   id                           String                  @id @default(cuid())
   name                         String                  @unique
-  type                         String?                 @default("OTHER")
   isActive                     Boolean                 @default(true)
   createdAt                    DateTime                @default(now())
   updatedAt                    DateTime                @updatedAt
+  type                         String?                 @default("OTHER")
   transactions                 FinancialTransaction[]
   finalPendingTransactions     OfxPendingTransaction[] @relation("FinalPaymentMethod")
   suggestedPendingTransactions OfxPendingTransaction[] @relation("SuggestedPaymentMethod")
@@ -123,21 +123,22 @@ model FinancialTransaction {
   transferToBank        Bank?                      @relation("TransferToBank", fields: [transferToBankId], references: [id])
   user                  User                       @relation(fields: [userId], references: [id])
 
-  @@index([userId])
-  @@index([userId, dueDate])
-  @@index([userId, status])
-  @@index([userId, type])
-  @@index([originalTransactionId])
-  @@index([categoryId])
-  @@index([paymentMethodId])
-  @@index([dueDate])
-  @@index([isRecurring])
-  @@index([bankId])
-  @@index([transactionDate])
-  @@index([ofxImportId])
-  @@index([transferFromBankId])
-  @@index([transferToBankId])
-  @@index([linkedTransactionId])
+  // Índices compostos otimizados para consultas frequentes
+  @@index([userId, status, dueDate]) // Consultas por usuário + status + data
+  @@index([userId, type, transactionDate]) // Relatórios por tipo e período
+  @@index([userId, categoryId, status]) // Filtros por categoria
+  @@index([bankId, transactionDate]) // Consultas de banco por período
+  @@index([userId, dueDate]) // Consultas de vencimento
+  @@index([userId, status]) // Consultas por status
+  @@index([userId, type]) // Consultas por tipo
+  @@index([originalTransactionId]) // Transações recorrentes
+  @@index([categoryId]) // Consultas por categoria
+  @@index([paymentMethodId]) // Consultas por método de pagamento
+  @@index([ofxImportId]) // Consultas de importação OFX
+  @@index([transferFromBankId]) // Transferências
+  @@index([transferToBankId]) // Transferências
+  @@index([linkedTransactionId]) // Transações vinculadas
+  
   @@map("financial_transactions")
 }
 
@@ -156,9 +157,8 @@ model OfxImport {
   bank                  Bank                    @relation(fields: [bankId], references: [id], onDelete: Cascade)
   pendingTransactions   OfxPendingTransaction[]
 
-  @@index([bankId])
-  @@index([importDate])
-  @@index([status])
+  @@index([bankId, status]) // Consultas por banco e status
+  @@index([importDate]) // Consultas por data de importação
   @@map("ofx_imports")
 }
 
@@ -176,7 +176,6 @@ model OfxPendingTransaction {
   memo                       String?
   name                       String?
   suggestedCategoryId        String?
-  suggestedCategoryName      String?
   confidence                 Int?
   finalCategoryId            String?
   createdAt                  DateTime                   @default(now())
@@ -184,7 +183,6 @@ model OfxPendingTransaction {
   finalPaymentMethodId       String?
   paymentMethodConfidence    Int?
   suggestedPaymentMethodId   String?
-  suggestedPaymentMethodName String?
   tags                       OfxPendingTransactionTag[]
   finalCategory              FinancialCategory?         @relation("FinalCategory", fields: [finalCategoryId], references: [id])
   finalPaymentMethod         PaymentMethod?             @relation("FinalPaymentMethod", fields: [finalPaymentMethodId], references: [id])
@@ -192,12 +190,13 @@ model OfxPendingTransaction {
   suggestedCategory          FinancialCategory?         @relation("SuggestedCategory", fields: [suggestedCategoryId], references: [id])
   suggestedPaymentMethod     PaymentMethod?             @relation("SuggestedPaymentMethod", fields: [suggestedPaymentMethodId], references: [id])
 
-  @@index([ofxImportId])
-  @@index([transactionDate])
-  @@index([suggestedCategoryId])
-  @@index([finalCategoryId])
-  @@index([suggestedPaymentMethodId])
-  @@index([finalPaymentMethodId])
+  // Índices compostos otimizados
+  @@index([ofxImportId, transactionDate]) // Consultas por importação e data
+  @@index([suggestedCategoryId, confidence]) // Categorização por confiança
+  @@index([finalCategoryId]) // Consultas por categoria final
+  @@index([suggestedPaymentMethodId]) // Consultas por método sugerido
+  @@index([finalPaymentMethodId]) // Consultas por método final
+  
   @@map("ofx_pending_transactions")
 }
 
@@ -218,9 +217,9 @@ model Bank {
   transfersTo   FinancialTransaction[] @relation("TransferToBank")
   ofxImports    OfxImport[]
 
-  @@index([isActive])
-  @@index([document])
-  @@index([holderName])
+  @@index([isActive, document]) // Consultas por status e documento
+  @@index([holderName]) // Consultas por titular
+  
   @@map("banks")
 }
 
@@ -263,8 +262,7 @@ model Tag {
   financialTransactions  FinancialTransactionTag[]
   ofxPendingTransactions OfxPendingTransactionTag[]
 
-  @@index([name])
-  @@index([isActive])
+  @@index([name, isActive]) // Consultas por nome e status ativo
   @@map("tags")
 }
 
@@ -277,8 +275,7 @@ model FinancialTransactionTag {
   tag                    Tag                  @relation(fields: [tagId], references: [id], onDelete: Cascade)
 
   @@unique([financialTransactionId, tagId])
-  @@index([financialTransactionId])
-  @@index([tagId])
+  @@index([financialTransactionId, tagId]) // Índice composto para consultas
   @@map("financial_transaction_tags")
 }
 
@@ -291,8 +288,7 @@ model OfxPendingTransactionTag {
   tag                     Tag                   @relation(fields: [tagId], references: [id], onDelete: Cascade)
 
   @@unique([ofxPendingTransactionId, tagId])
-  @@index([ofxPendingTransactionId])
-  @@index([tagId])
+  @@index([ofxPendingTransactionId, tagId]) // Índice composto para consultas
   @@map("ofx_pending_transaction_tags")
 }
 

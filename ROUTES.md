@@ -354,42 +354,6 @@ Este usuário tem todas as permissões por padrão.
 
 ## Transações Bancárias
 
-### Listar todas as transações de todos os bancos
-```
-GET /api/bancos/transactions
-```
-
-Por padrão, retorna apenas as transações do usuário logado.
-
-#### Para retornar transações de todos os usuários:
-```
-GET /api/bancos/transactions?all=true
-```
-
-#### Parâmetros de filtro disponíveis:
-- `all=true`: Retorna transações de todos os usuários (boolean)
-- `type`: Tipo da transação (CREDIT, DEBIT)
-- `status`: Status da transação (PENDING, CONFIRMED, CANCELLED)
-- `categoryId`: ID da categoria
-- `paymentMethodId`: ID do método de pagamento
-- `startDate`: Data de início (formato ISO)
-- `endDate`: Data de fim (formato ISO)
-
-#### Exemplos:
-```
-# Todas as transações do usuário logado
-GET /api/bancos/transactions
-
-# Todas as transações de todos os usuários
-GET /api/bancos/transactions?all=true
-
-# Transações confirmadas entre duas datas
-GET /api/bancos/transactions?status=CONFIRMED&startDate=2024-01-01&endDate=2024-12-31
-
-# Todas as transações de crédito de todos os usuários
-GET /api/bancos/transactions?all=true&type=CREDIT
-```
-
 ### Listar transações de um banco específico
 ```
 GET /api/bancos/{bankId}/transactions

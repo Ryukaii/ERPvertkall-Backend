@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../config/prisma.service';
+import { CacheService } from '../../../common/services/cache.service';
 import { Readable } from 'stream';
 import * as ofx from 'ofx';
 
@@ -25,7 +26,10 @@ export interface BulkTransactionData {
 export class OfxBulkProcessorService {
   private readonly logger = new Logger(OfxBulkProcessorService.name);
   
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private cacheService: CacheService,
+  ) {}
 
   /**
    * Parse OFX usando streams para arquivos grandes
@@ -298,19 +302,21 @@ export class OfxBulkProcessorService {
    */
   async bulkInsertPendingTransactions(
     transactions: BulkTransactionData[],
-    batchSize: number = 500
+    batchSize: number = 100 // Reduced from 500 to 100 for better performance
   ): Promise<{ total: number; batches: number; duration: number }> {
     const startTime = Date.now();
     const total = transactions.length;
     const batches = Math.ceil(total / batchSize);
     
-    this.logger.log(`📊 Iniciando bulk insert: ${total} transações em ${batches} lotes`);
+    this.logger.log(`📊 Iniciando bulk insert otimizado: ${total} transações em ${batches} lotes de ${batchSize}`);
 
     try {
-      // Converter nomes de categorias para IDs antes de inserir
-      const convertedTransactions = await this.convertCategoryNamesToIds(transactions);
+      // Usar cache service para conversão otimizada
+      const convertedTransactions = this.cacheService.convertCategoryNamesToIds(
+        this.cacheService.convertPaymentMethodNamesToIds(transactions)
+      );
       
-      // Processar em lotes para evitar timeout
+      // Processar em lotes menores para melhor performance
       for (let i = 0; i < batches; i++) {
         const start = i * batchSize;
         const end = Math.min(start + batchSize, total);
@@ -319,41 +325,32 @@ export class OfxBulkProcessorService {
         this.logger.log(`🔄 Inserindo lote ${i + 1}/${batches} (${batch.length} transações)`);
         
         // Usar createMany para bulk insert otimizado
-        const insertData = batch.map(tx => {
-          const data = {
-            ofxImportId: tx.ofxImportId,
-            title: tx.title,
-            description: tx.description,
-            amount: tx.amount,
-            type: tx.type as any, // Type assertion para enum
-            transactionDate: tx.transactionDate,
-            fitid: tx.fitid,
-            trntype: tx.trntype,
-            checknum: tx.checknum,
-            memo: tx.memo,
-            name: tx.name,
-            suggestedCategoryId: tx.suggestedCategoryId,
-            confidence: tx.confidence,
-            suggestedPaymentMethodId: tx.suggestedPaymentMethodId,
-            paymentMethodConfidence: tx.paymentMethodConfidence,
-          };
-          
-          // Log se tem categorização
-          if (tx.suggestedCategoryId) {
-            this.logger.log(`📊 Inserindo com categoria: "${tx.description}" -> ${tx.suggestedCategoryId}`);
-          }
-          
-          return data;
-        });
+        const insertData = batch.map(tx => ({
+          ofxImportId: tx.ofxImportId,
+          title: tx.title,
+          description: tx.description,
+          amount: tx.amount,
+          type: tx.type as any, // Type assertion para enum
+          transactionDate: tx.transactionDate,
+          fitid: tx.fitid,
+          trntype: tx.trntype,
+          checknum: tx.checknum,
+          memo: tx.memo,
+          name: tx.name,
+          suggestedCategoryId: tx.suggestedCategoryId,
+          confidence: tx.confidence,
+          suggestedPaymentMethodId: tx.suggestedPaymentMethodId,
+          paymentMethodConfidence: tx.paymentMethodConfidence,
+        }));
 
         await this.prisma.ofxPendingTransaction.createMany({
           data: insertData,
           skipDuplicates: true, // Otimização para evitar erros de duplicação
         });
 
-        // Pequena pausa entre lotes para não sobrecarregar o banco
+        // Pausa menor entre lotes
         if (i < batches - 1) {
-          await new Promise(resolve => setTimeout(resolve, 10));
+          await new Promise(resolve => setTimeout(resolve, 5)); // Reduced from 10 to 5ms
         }
       }
 

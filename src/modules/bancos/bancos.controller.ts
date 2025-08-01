@@ -19,8 +19,6 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequireModule } from '../../common/decorators/module.decorator';
 import { Permission } from '../../common/decorators/permission.decorator';
 import { User } from '@prisma/client';
-import { BankTransactionService } from './bank-transaction.service';
-import { FilterBankTransactionDto } from './dto/filter-bank-transaction.dto';
 import { TransactionFiltersDto } from './dto/transactions-summary.dto';
 
 @Controller('bancos')
@@ -29,7 +27,6 @@ import { TransactionFiltersDto } from './dto/transactions-summary.dto';
 export class BancosController {
   constructor(
     private readonly bancosService: BancosService,
-    private readonly bankTransactionService: BankTransactionService,
   ) {}
 
   @Post()
@@ -44,19 +41,7 @@ export class BancosController {
     return this.bancosService.findAll();
   }
 
-  @Get('transactions')
-  @Permission('bancos', 'bank_transactions', 'read')
-  findAllTransactions(
-    @CurrentUser() user: User,
-    @Query() filters: FilterBankTransactionDto,
-  ) {
-    // Se o parâmetro 'all' estiver presente e for true, retorna todas as transações
-    // Senão, retorna apenas as transações do usuário atual
-    const shouldReturnAll = filters.all === true;
-    const userId = shouldReturnAll ? undefined : user.id;
-    
-    return this.bankTransactionService.findAllTransactions(filters, userId);
-  }
+
 
   @Get('account-types')
   @Permission('bancos', 'banks', 'read')

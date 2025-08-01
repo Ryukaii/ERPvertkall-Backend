@@ -196,7 +196,6 @@ export class AiCategorizationService {
         where: { id: pendingTransactionId },
         data: {
           suggestedCategoryId: categoryId,
-          suggestedCategoryName: category.name,
           confidence,
         },
       });

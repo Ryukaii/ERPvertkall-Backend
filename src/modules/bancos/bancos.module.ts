@@ -19,6 +19,7 @@ import { TransferController } from './transfer.controller';
 import { ConvertTransactionController } from './convert-transaction.controller';
 import { RegexStatsController } from './controllers/regex-stats.controller';
 import { PrismaService } from '../../config/prisma.service';
+import { CacheService } from '../../common/services/cache.service';
 import { TagsModule } from '../tags/tags.module';
 
 @Module({
@@ -45,6 +46,7 @@ import { TagsModule } from '../tags/tags.module';
     OfxBulkProcessorService,
     RegexOptimizationService,
     PrismaService,
+    CacheService,
   ],
 })
 export class BancosModule {} 

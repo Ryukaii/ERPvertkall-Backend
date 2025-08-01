@@ -159,9 +159,6 @@ Obter resumo de transações com filtros avançados e paginação.
 
 #### Exemplos de uso
 ```bash
-# Todas as transações do usuário
-GET /api/bancos/transactions/summary?bankId=all
-
 # Apenas créditos pendentes de um banco específico
 GET /api/bancos/transactions/summary?bankId=bank_123&type=CREDIT&status=PENDING
 
